@@ -1,0 +1,45 @@
+# Secrets & local env
+.env
+.env.local
+*.pem
+*.key
+secrets/
+credentials/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg
+
+# Local data volumes / backups
+data/
+backups/
+*.dump
+redis-data/
+postgres-data/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+
+# Optional local override configs
+config/litellm.local.yaml
+config/accounts.yaml

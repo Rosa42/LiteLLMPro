@@ -1,0 +1,105 @@
+# Minimal LiteLLM config for M0.
+# - No real secrets in this file (use env vars).
+# - No default cross-model fallback (Kimi → GLM).
+# - M0: routing_strategy simple-shuffle is allowed.
+# - Phase 7 (P7-T8): MUST inject custom Shared Quota strategy via bootstrap.
+# - Phase 8 (P8-T8): incrementally add callbacks (do NOT revert to simple-shuffle only).
+
+model_list:
+  # OpenCode A
+  - model_name: kimi-k3
+    model_info:
+      deployment_id: opencode-a-kimi
+      provider_id: opencode-go
+      account_id: opencode-a
+      quota_group_id: opencode-a
+      priority: 10
+    litellm_params:
+      model: openai/kimi-k3
+      api_base: os.environ/OPENCODE_GO_BASE_URL
+      api_key: os.environ/OPENCODE_GO_KEY_A
+      timeout: 300
+
+  - model_name: glm-5.2
+    model_info:
+      deployment_id: opencode-a-glm
+      provider_id: opencode-go
+      account_id: opencode-a
+      quota_group_id: opencode-a
+      priority: 10
+    litellm_params:
+      model: openai/glm-5.2
+      api_base: os.environ/OPENCODE_GO_BASE_URL
+      api_key: os.environ/OPENCODE_GO_KEY_A
+      timeout: 300
+
+  # OpenCode B
+  - model_name: kimi-k3
+    model_info:
+      deployment_id: opencode-b-kimi
+      provider_id: opencode-go
+      account_id: opencode-b
+      quota_group_id: opencode-b
+      priority: 20
+    litellm_params:
+      model: openai/kimi-k3
+      api_base: os.environ/OPENCODE_GO_BASE_URL
+      api_key: os.environ/OPENCODE_GO_KEY_B
+      timeout: 300
+
+  - model_name: glm-5.2
+    model_info:
+      deployment_id: opencode-b-glm
+      provider_id: opencode-go
+      account_id: opencode-b
+      quota_group_id: opencode-b
+      priority: 20
+    litellm_params:
+      model: openai/glm-5.2
+      api_base: os.environ/OPENCODE_GO_BASE_URL
+      api_key: os.environ/OPENCODE_GO_KEY_B
+      timeout: 300
+
+  # Volc C
+  - model_name: kimi-k3
+    model_info:
+      deployment_id: volc-c-kimi
+      provider_id: volcengine
+      account_id: volc-c
+      quota_group_id: volc-c
+      priority: 30
+    litellm_params:
+      model: openai/kimi-k3
+      api_base: os.environ/VOLC_CODING_BASE_URL
+      api_key: os.environ/VOLC_CODING_KEY_C
+      timeout: 300
+
+  - model_name: glm-5.2
+    model_info:
+      deployment_id: volc-c-glm
+      provider_id: volcengine
+      account_id: volc-c
+      quota_group_id: volc-c
+      priority: 30
+    litellm_params:
+      model: openai/glm-5.2
+      api_base: os.environ/VOLC_CODING_BASE_URL
+      api_key: os.environ/VOLC_CODING_KEY_C
+      timeout: 300
+
+router_settings:
+  # M0 only. Phase 7+ replaces with custom Shared Quota strategy.
+  routing_strategy: simple-shuffle
+  num_retries: 2
+  allowed_fails: 1
+  cooldown_time: 30
+  retry_after: 1
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  # Phase 8: enable shared_quota_router.callback_instance
+  # callbacks:
+  #   - shared_quota_router.callback_instance
+  drop_params: true

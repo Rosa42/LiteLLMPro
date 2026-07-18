@@ -1,0 +1,35 @@
+# Example account / deployment metadata (no real API keys).
+# Runtime secrets must come from environment variables only.
+
+providers:
+  - provider_id: opencode-go
+    name: OpenCode Go
+    classifier_type: opencode_go
+    base_url_env: OPENCODE_GO_BASE_URL
+
+  - provider_id: volcengine
+    name: Volcengine Coding Plan
+    classifier_type: volcengine
+    base_url_env: VOLC_CODING_BASE_URL
+
+quota_groups:
+  - quota_group_id: opencode-a
+    provider_id: opencode-go
+    account_id: opencode-a
+    display_name: OpenCode Go A
+    priority: 10
+    api_key_env: OPENCODE_GO_KEY_A
+
+  - quota_group_id: opencode-b
+    provider_id: opencode-go
+    account_id: opencode-b
+    display_name: OpenCode Go B
+    priority: 20
+    api_key_env: OPENCODE_GO_KEY_B
+
+  - quota_group_id: volc-c
+    provider_id: volcengine
+    account_id: volc-c
+    display_name: Volc Coding Plan C
+    priority: 30
+    api_key_env: VOLC_CODING_KEY_C

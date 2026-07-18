@@ -1,0 +1,10 @@
+ARG LITELLM_VERSION=v1.90.5
+FROM ghcr.io/berriai/litellm:${LITELLM_VERSION}
+
+COPY plugins/shared_quota_router /app/shared_quota_router
+ENV PYTHONPATH="/app:${PYTHONPATH}"
+WORKDIR /app
+
+# Phase 9: real recovery_worker entrypoint.
+# M0 placeholder keeps the container restarting cleanly.
+CMD ["python", "-c", "import time; print('quota-worker placeholder (phase 9)'); time.sleep(3600)"]
