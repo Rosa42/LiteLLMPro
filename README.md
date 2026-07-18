@@ -97,4 +97,6 @@ pytest tests/contract/test_c0_routing.py -q
 
 ## 状态
 
-当前：工程骨架与 M0 配置落地中（阶段 1+）。
+**阶段 1–15 主路径已交付**（被动共享额度路由）。  
+投入使用请读 **[USAGE.md](./USAGE.md)**。  
+测试：`pytest -q`（49+ passed）。

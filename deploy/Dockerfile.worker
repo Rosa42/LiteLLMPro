@@ -2,13 +2,16 @@ ARG LITELLM_VERSION=v1.90.5
 FROM ghcr.io/berriai/litellm:${LITELLM_VERSION}
 
 COPY plugins/shared_quota_router /app/shared_quota_router
+COPY config/litellm.yaml /app/config.yaml
+
+RUN pip install --no-cache-dir "redis>=5" "pyyaml>=6" \
+    || true
+
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 ENV PYTHONUNBUFFERED=1
+ENV LITELLM_CONFIG=/app/config.yaml
 WORKDIR /app
 
 # Official LiteLLM image entrypoint is litellm CLI; worker must bypass it.
 ENTRYPOINT []
-
-# Phase 9: real recovery_worker entrypoint.
-# M0 placeholder keeps the container running cleanly.
-CMD ["python", "-c", "import time; print('quota-worker placeholder (phase 9)', flush=True); time.sleep(3600)"]
+CMD ["python", "-m", "shared_quota_router.recovery_worker"]

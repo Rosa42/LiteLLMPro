@@ -101,7 +101,6 @@ general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 
 litellm_settings:
-  # Phase 8: enable shared_quota_router.callback_instance
-  # callbacks:
-  #   - shared_quota_router.callback_instance
+  callbacks:
+    - shared_quota_router.callback_instance
   drop_params: true
