@@ -28,7 +28,10 @@ from shared_quota_router.models import (
     RequestRoutingContext,
 )
 from shared_quota_router.state_store import StateStore, StateStoreError
-from shared_quota_router.strategy import context_from_request_kwargs
+from shared_quota_router.strategy import (
+    context_from_request_kwargs,
+    save_request_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +52,24 @@ class SharedQuotaCallback:
         classifier: GenericOpenAIClassifier | None = None,
         alert_hook: AlertHook | None = None,
         short_cooldown_seconds: int = 30,
+        reqctx_ttl_seconds: int = 360,
     ) -> None:
         self.store = store
         self.lease_manager = lease_manager
         self.classifier = classifier or GenericOpenAIClassifier()
         self.alert_hook = alert_hook or _default_alert
         self.short_cooldown_seconds = short_cooldown_seconds
+        self.reqctx_ttl_seconds = reqctx_ttl_seconds
+
+    def _ctx(self, kwargs: dict[str, Any]) -> RequestRoutingContext:
+        return context_from_request_kwargs(
+            kwargs,
+            store=self.store,
+            ttl_seconds=self.reqctx_ttl_seconds,
+        )
+
+    def _save_ctx(self, ctx: RequestRoutingContext) -> None:
+        save_request_context(ctx, self.store, ttl_seconds=self.reqctx_ttl_seconds)
 
     # --- LiteLLM CustomLogger-compatible hooks ---
 
@@ -83,9 +98,10 @@ class SharedQuotaCallback:
     # --- Core logic ---
 
     def mark_first_byte(self, kwargs: dict[str, Any]) -> None:
-        ctx = context_from_request_kwargs(kwargs)
+        ctx = self._ctx(kwargs)
         if not ctx.first_byte_sent:
             ctx.mark_first_byte_sent()
+            self._save_ctx(ctx)  # P0-3: immediately durable for strategy reloads
             inc("shared_quota_stream_first_byte_total")
             logger.info(
                 "first_byte_sent request_id=%s — cross-deployment retry forbidden",
@@ -93,8 +109,8 @@ class SharedQuotaCallback:
             )
 
     def should_allow_retry(self, kwargs: dict[str, Any]) -> bool:
-        """Gate for cross-deployment retry (strategy/caller should honor)."""
-        ctx = context_from_request_kwargs(kwargs)
+        """Gate for cross-deployment retry (strategy also enforces via Redis)."""
+        ctx = self._ctx(kwargs)
         if ctx.first_byte_sent:
             inc("shared_quota_stream_failure_after_first_byte_total")
             return False
@@ -159,7 +175,7 @@ class SharedQuotaCallback:
 
     def on_failure(self, kwargs: dict[str, Any], response_obj: Any = None) -> None:
         meta = self._extract_deployment_meta(kwargs)
-        ctx = context_from_request_kwargs(kwargs)
+        ctx = self._ctx(kwargs)
         request_id = str(kwargs.get("litellm_call_id") or ctx.request_id)
         qg = meta.get("quota_group_id")
         dep_id = meta.get("deployment_id")
@@ -173,6 +189,7 @@ class SharedQuotaCallback:
 
         if qg:
             ctx.mark_tried(qg)
+        self._save_ctx(ctx)
 
         classification = self._classify(kwargs, response_obj)
         inc(
@@ -283,6 +300,11 @@ class SharedQuotaCallback:
             group.last_failure_at = now
             group.revision += 1
             self.store.put_quota_group(group)
+            # P0-2: clear sticky routes to this account
+            try:
+                self.store.clear_affinity_for_quota_group(quota_group_id)
+            except StateStoreError as exc:
+                logger.warning("affinity clear on disable failed: %s", exc)
             self.alert_hook(
                 "quota_group_disabled",
                 {

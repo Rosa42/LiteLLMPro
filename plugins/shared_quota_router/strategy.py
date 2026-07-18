@@ -219,27 +219,80 @@ def session_key_from_request(
     return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 
-def context_from_request_kwargs(
+def resolve_request_id(
     request_kwargs: dict[str, Any] | None,
     *,
     default_request_id: str = "unknown",
-) -> RequestRoutingContext:
+) -> str:
     kwargs = request_kwargs or {}
-    existing = kwargs.get("_shared_quota_context")
-    if isinstance(existing, RequestRoutingContext):
-        return existing
-
     metadata = kwargs.get("metadata") or {}
-    request_id = (
+    rid = (
         kwargs.get("litellm_call_id")
         or kwargs.get("litellm_trace_id")
         or (metadata.get("request_id") if isinstance(metadata, dict) else None)
         or default_request_id
     )
-    ctx = RequestRoutingContext(request_id=str(request_id))
-    # Persist for retries within same request path
+    return str(rid)
+
+
+def context_from_request_kwargs(
+    request_kwargs: dict[str, Any] | None,
+    *,
+    default_request_id: str = "unknown",
+    store: StateStore | None = None,
+    persist: bool = True,
+    ttl_seconds: int = 360,
+) -> RequestRoutingContext:
+    """Resolve routing context: kwargs cache → Redis reqctx → new.
+
+    P0: Redis-backed so LiteLLM retries without shared kwargs still see
+    tried_quota_groups and first_byte_sent.
+    """
+    kwargs = request_kwargs if request_kwargs is not None else {}
+    existing = kwargs.get("_shared_quota_context")
+    if isinstance(existing, RequestRoutingContext):
+        # Refresh from Redis if available (source of truth for cross-retry)
+        if store is not None and existing.request_id and existing.request_id != "unknown":
+            try:
+                remote = store.get_request_context(existing.request_id)
+                if remote is not None:
+                    existing.tried_quota_groups |= remote.tried_quota_groups
+                    existing.first_byte_sent = existing.first_byte_sent or remote.first_byte_sent
+            except StateStoreError:
+                pass
+        return existing
+
+    request_id = resolve_request_id(kwargs, default_request_id=default_request_id)
+    ctx: RequestRoutingContext | None = None
+    if store is not None and request_id != "unknown":
+        try:
+            ctx = store.get_request_context(request_id)
+        except StateStoreError:
+            ctx = None
+    if ctx is None:
+        ctx = RequestRoutingContext(request_id=request_id)
+        if store is not None and persist and request_id != "unknown":
+            try:
+                store.put_request_context(ctx, ttl_seconds=ttl_seconds)
+            except StateStoreError as exc:
+                logger.warning("reqctx create failed: %s", exc)
+
     kwargs["_shared_quota_context"] = ctx
     return ctx
+
+
+def save_request_context(
+    ctx: RequestRoutingContext,
+    store: StateStore | None,
+    *,
+    ttl_seconds: int = 360,
+) -> None:
+    if store is None:
+        return
+    try:
+        store.put_request_context(ctx, ttl_seconds=ttl_seconds)
+    except StateStoreError as exc:
+        logger.warning("reqctx save failed: %s", exc)
 
 
 def model_list_to_registry(model_list: list[dict[str, Any]]) -> DeploymentRegistry:
@@ -338,7 +391,19 @@ class SharedQuotaRoutingStrategy:
             raise NoAvailableDeploymentError("router model_list is empty")
 
         selector = self._selector_for(model_list)
-        ctx = context_from_request_kwargs(request_kwargs)
+        # P0: always load/merge Redis reqctx so retries share tried + first_byte
+        ctx = context_from_request_kwargs(request_kwargs, store=self.store)
+
+        # P0-3 hard gate: after first stream byte, refuse any cross-deployment pick
+        if ctx.first_byte_sent:
+            logger.error(
+                "refusing deployment selection: first_byte_sent request_id=%s",
+                ctx.request_id,
+            )
+            raise NoAvailableDeploymentError(
+                f"stream first byte already sent; cross-deployment switch forbidden "
+                f"request_id={ctx.request_id}"
+            )
 
         try:
             session_hash = session_key_from_request(
@@ -357,38 +422,41 @@ class SharedQuotaRoutingStrategy:
                 ctx,
                 affinity_deployment_id=affinity_id,
             )
+            # Persist tried set for next retry (even if kwargs object differs)
+            save_request_context(ctx, self.store)
         except StateStoreError as exc:
             logger.error("fail-closed: redis error during routing: %s", exc)
             raise NoAvailableDeploymentError(f"redis unavailable: {exc}") from exc
 
         entry = find_model_entry(model_list, chosen)
         if entry is None:
-            # Build a synthetic entry from registry + first matching model_name
             for e in model_list:
                 if e.get("model_name") == model:
-                    # Prefer matching quota_group via model_info
                     info = e.get("model_info") or {}
                     if info.get("quota_group_id") == chosen.quota_group_id:
-                        return e
-            raise NoAvailableDeploymentError(
-                f"no model_list entry for deployment {chosen.deployment_id}"
-            )
+                        entry = e
+                        break
+            if entry is None:
+                raise NoAvailableDeploymentError(
+                    f"no model_list entry for deployment {chosen.deployment_id}"
+                )
 
-        # Persist affinity (best-effort)
         try:
             self.store.set_affinity(
                 session_hash,
                 chosen.deployment_id,
+                quota_group_id=chosen.quota_group_id,
                 ttl_seconds=AFFINITY_TTL_SECONDS,
             )
         except StateStoreError as exc:
             logger.warning("affinity write failed: %s", exc)
 
         logger.info(
-            "selected deployment_id=%s quota_group=%s model=%s request_id=%s",
+            "selected deployment_id=%s quota_group=%s model=%s request_id=%s tried=%s",
             chosen.deployment_id,
             chosen.quota_group_id,
             model,
             ctx.request_id,
+            sorted(ctx.tried_quota_groups),
         )
         return entry
