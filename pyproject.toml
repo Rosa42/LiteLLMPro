@@ -15,8 +15,12 @@ dev = [
     "ruff>=0.6.0",
     "mypy>=1.11.0",
     "fakeredis[lua]>=2.23.0",
-    # Contract tests (C0/C1): pin to match LITELLM_VERSION when enabling.
-    # "litellm==1.90.5",
+]
+contract = [
+    # C0/C1: pin to match LITELLM_VERSION (config/versions.env)
+    "litellm==1.90.5",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
 ]
 
 [build-system]

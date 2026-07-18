@@ -24,6 +24,9 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # Register shared-quota strategy after llm_router is ready (v1.90.5 hook).
+      LITELLM_WORKER_STARTUP_HOOKS: shared_quota_router.bootstrap:register_proxy_startup
       # Do not inject DATABASE_URL here. For core/M0 leave it unset in .env
       # so LiteLLM skips Prisma/Postgres. Enable only with profile "full".
     volumes:

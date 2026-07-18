@@ -88,7 +88,9 @@ model_list:
       timeout: 300
 
 router_settings:
-  # M0 only. Phase 7+ replaces with custom Shared Quota strategy.
+  # Baseline strategy name. Phase 7+ Shared Quota strategy is mounted via
+  # bootstrap.register() / LITELLM_WORKER_STARTUP_HOOKS and replaces
+  # get_available_deployment on the Router instance (official API).
   routing_strategy: simple-shuffle
   num_retries: 2
   allowed_fails: 1

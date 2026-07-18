@@ -67,9 +67,24 @@ docker compose --env-file .env -f deploy/docker-compose.yaml --profile core up -
 - **core** 配置：litellm + redis + quota-worker  
 - **full** 配置：另加 postgres + caddy（`127.0.0.1:4000`）
 
-M0 阶段路由可使用 LiteLLM 原生 `simple-shuffle`。  
-**阶段 7 起必须注入自定义 Shared Quota 策略**（见启动说明与 `config/litellm.yaml` 注释）。  
-M2a 验收禁止仍仅使用 simple-shuffle。
+## 自定义路由（阶段 7+）
+
+唯一注册入口：`shared_quota_router.bootstrap.register(router)`。
+
+Proxy 通过环境变量延迟挂载（`load_config` 之后）：
+
+```text
+LITELLM_WORKER_STARTUP_HOOKS=shared_quota_router.bootstrap:register_proxy_startup
+```
+
+扩展点说明：`docs/extension-points-v1.90.5.md`。
+
+契约测试：
+
+```bash
+pip install -e ".[dev,contract]"
+pytest tests/contract/test_c0_routing.py -q
+```
 
 ## 文档索引
 
