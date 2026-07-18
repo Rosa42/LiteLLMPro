@@ -37,13 +37,23 @@ logger = logging.getLogger(__name__)
 
 AlertHook = Callable[[str, dict[str, Any]], None]
 
+try:
+    from litellm.integrations.custom_logger import CustomLogger as _CustomLoggerBase
+except Exception:  # pragma: no cover - unit tests without litellm
+    class _CustomLoggerBase:  # type: ignore[no-redef]
+        """Minimal stand-in when litellm is not installed."""
+
 
 def _default_alert(event: str, payload: dict[str, Any]) -> None:
     logger.error("ALERT %s %s", event, payload)
 
 
-class SharedQuotaCallback:
-    """Process success/failure events and update Redis quota state."""
+class SharedQuotaCallback(_CustomLoggerBase):
+    """Process success/failure events and update Redis quota state.
+
+    Subclasses LiteLLM CustomLogger so proxy post-call hooks exist (no-op or
+    thin wrappers). Business logic stays in on_success / on_failure.
+    """
 
     def __init__(
         self,
@@ -89,11 +99,44 @@ class SharedQuotaCallback:
         # First stream chunk ⇒ mark first byte (hard switch gate)
         self.mark_first_byte(kwargs)
 
-    async def async_post_call_streaming_hook(
-        self, kwargs: dict | None = None, **_extra: Any
-    ) -> None:
-        if kwargs:
-            self.mark_first_byte(kwargs)
+    async def async_post_call_success_hook(
+        self,
+        data: dict,
+        user_api_key_dict: Any = None,
+        response: Any = None,
+        **_extra: Any,
+    ) -> Any:
+        """Required by LiteLLM proxy post-call path; pass response through."""
+        # Prefer logging hooks for quota accounting; this only satisfies the
+        # CustomLogger contract so success responses are not rejected.
+        if isinstance(data, dict):
+            try:
+                self.on_success(data)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("post_call_success on_success failed: %s", exc)
+        return response
+
+    async def async_post_call_failure_hook(
+        self,
+        request_data: dict,
+        original_exception: Exception,
+        user_api_key_dict: Any = None,
+        traceback_str: str | None = None,
+        **_extra: Any,
+    ) -> Any:
+        if isinstance(request_data, dict):
+            try:
+                self.on_failure(request_data, original_exception)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("post_call_failure on_failure failed: %s", exc)
+        return None
+
+    # NOTE: Do NOT override async_post_call_streaming_hook.
+    # LiteLLM calls it with response=<accumulated content STRING>. Returning
+    # that string replaces the ModelResponseStream chunk and breaks SSE into
+    # bare text (e.g. data: 你好), which makes OpenCode / AI SDK fail with
+    # "JSON parsing failed: Text: 你好". First-byte marking uses
+    # async_log_stream_event only.
 
     # --- Core logic ---
 

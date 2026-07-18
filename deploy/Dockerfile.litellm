@@ -3,6 +3,8 @@ FROM ghcr.io/berriai/litellm:${LITELLM_VERSION}
 
 # Plugin package at import path: shared_quota_router
 COPY plugins/shared_quota_router /app/shared_quota_router
+# LiteLLM loads callbacks as a single .py beside config.yaml (not a package dir)
+COPY plugins/shared_quota_callback.py /app/shared_quota_callback.py
 COPY config/litellm.yaml /app/config.yaml
 
 # Optional minimal registration patch (phase 7). No-op if missing.

@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 AFFINITY_TTL_SECONDS = 7200  # 2h
 DEFAULT_REQUEST_TIMEOUT = 300
 
+# In-process cache only. NEVER put RequestRoutingContext on request kwargs —
+# LiteLLM may JSON-serialize kwargs (logs / exception mapping) and would fail.
+_CTX_BY_REQUEST_ID: dict[str, RequestRoutingContext] = {}
+
 
 class NoAvailableDeploymentError(Exception):
     """Raised when no deployment can be selected (fail-closed or empty candidates)."""
@@ -243,26 +247,31 @@ def context_from_request_kwargs(
     persist: bool = True,
     ttl_seconds: int = 360,
 ) -> RequestRoutingContext:
-    """Resolve routing context: kwargs cache → Redis reqctx → new.
+    """Resolve routing context: process cache → Redis reqctx → new.
 
     P0: Redis-backed so LiteLLM retries without shared kwargs still see
     tried_quota_groups and first_byte_sent.
+
+    Do not attach the context object onto ``request_kwargs`` — LiteLLM may
+    JSON-serialize kwargs and ``RequestRoutingContext`` is not serializable.
     """
     kwargs = request_kwargs if request_kwargs is not None else {}
-    existing = kwargs.get("_shared_quota_context")
+    request_id = resolve_request_id(kwargs, default_request_id=default_request_id)
+
+    existing = _CTX_BY_REQUEST_ID.get(request_id)
     if isinstance(existing, RequestRoutingContext):
-        # Refresh from Redis if available (source of truth for cross-retry)
         if store is not None and existing.request_id and existing.request_id != "unknown":
             try:
                 remote = store.get_request_context(existing.request_id)
                 if remote is not None:
                     existing.tried_quota_groups |= remote.tried_quota_groups
-                    existing.first_byte_sent = existing.first_byte_sent or remote.first_byte_sent
+                    existing.first_byte_sent = (
+                        existing.first_byte_sent or remote.first_byte_sent
+                    )
             except StateStoreError:
                 pass
         return existing
 
-    request_id = resolve_request_id(kwargs, default_request_id=default_request_id)
     ctx: RequestRoutingContext | None = None
     if store is not None and request_id != "unknown":
         try:
@@ -277,7 +286,12 @@ def context_from_request_kwargs(
             except StateStoreError as exc:
                 logger.warning("reqctx create failed: %s", exc)
 
-    kwargs["_shared_quota_context"] = ctx
+    if request_id != "unknown":
+        _CTX_BY_REQUEST_ID[request_id] = ctx
+        # Bound process cache growth (best-effort)
+        if len(_CTX_BY_REQUEST_ID) > 2048:
+            for old_key in list(_CTX_BY_REQUEST_ID.keys())[:512]:
+                _CTX_BY_REQUEST_ID.pop(old_key, None)
     return ctx
 
 

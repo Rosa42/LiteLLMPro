@@ -35,15 +35,21 @@ def _build_redis_client() -> Any:
         logger.warning("redis package not installed")
         return None
 
+    # protocol=2 (RESP2): works with Redis 5+ Windows builds and Redis 7 Docker.
+    # redis-py 5+ defaults to RESP3/HELLO which older redis-server rejects.
+    common: dict[str, Any] = {"decode_responses": True, "protocol": 2}
+
     url = os.environ.get("REDIS_URL")
     if url:
-        return redis_lib.Redis.from_url(url, decode_responses=True)
+        return redis_lib.Redis.from_url(url, **common)
 
     host = os.environ.get("REDIS_HOST", "127.0.0.1")
     port = int(os.environ.get("REDIS_PORT", "6379"))
     password = os.environ.get("REDIS_PASSWORD") or None
     db = int(os.environ.get("REDIS_DB", "0"))
-    return redis_lib.Redis(host=host, port=port, password=password, db=db, decode_responses=True)
+    return redis_lib.Redis(
+        host=host, port=port, password=password, db=db, **common
+    )
 
 
 def _fail_redis() -> Any:

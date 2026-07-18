@@ -1,15 +1,34 @@
-# local-llm-router
+# local-llm-router (LiteLLMPro)
 
-本地运行的 OpenAI API 兼容中转站：在 **LiteLLM Proxy** 上叠加 **共享 Coding Plan 额度路由**。
+本地运行的 OpenAI API 兼容中转站：在 **[LiteLLM](https://github.com/BerriAI/litellm) Proxy** 上叠加 **共享 Coding Plan 额度路由**。
 
-客户端只看到逻辑模型：
+> **许可与归属**：本仓库插件/脚本/文档为 MIT（见 [LICENSE](./LICENSE)）。  
+> 上游 LiteLLM 开源部分亦为 MIT（见 [upstream/litellm/LICENSE](./upstream/litellm/LICENSE) 与 [NOTICE](./NOTICE)）。  
+> `enterprise/` 目录若存在则适用商业许可，勿当作 MIT 分发。
+
+客户端只看到逻辑模型（示例）：
 
 ```text
-kimi-k3
+ark-code-latest
 glm-5.2
 ```
 
-底层将多个套餐账号（OpenCode Go A/B、火山 Coding Plan C 等）按 **模型组** 聚合、按 **QuotaGroup（账号共享额度）** 熔断与故障转移。
+底层将多个套餐账号（OpenCode Go A/B、火山 Coding Plan 等）按 **模型组** 聚合、按 **QuotaGroup（账号共享额度）** 熔断与故障转移。
+
+## 快速启动（Windows 本机）
+
+```powershell
+cd local-llm-router
+.\scripts\llm-router.ps1 init          # 首次
+# 编辑 .env 填入上游 BaseURL / API Key
+.\scripts\llm-router.ps1 apply
+.\scripts\llm-router.ps1 start
+.\scripts\llm-router.ps1 status
+```
+
+详情：`docs/配置套餐与启动.md` · 日常：`.\scripts\llm-router.ps1 start|stop|status`
+
+客户端：`http://127.0.0.1:4000/v1`，Key 使用 `.env` 中 `LITELLM_MASTER_KEY`（不是上游 Key）。
 
 ## 设计原则（摘要）
 

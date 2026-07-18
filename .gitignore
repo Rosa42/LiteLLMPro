@@ -43,3 +43,9 @@ Thumbs.db
 # Optional local override configs
 config/litellm.local.yaml
 config/accounts.yaml
+# Local plan declarations may be customized; example stays tracked
+config/plans.yaml
+
+# Local tools / runtime (Redis Windows binary, logs, pids)
+.tools/
+*.pid
