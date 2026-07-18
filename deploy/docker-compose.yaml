@@ -24,6 +24,8 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ${REDIS_PASSWORD}
+      # Do not inject DATABASE_URL here. For core/M0 leave it unset in .env
+      # so LiteLLM skips Prisma/Postgres. Enable only with profile "full".
     volumes:
       - ../config/litellm.yaml:/app/config.yaml:ro
     command:
