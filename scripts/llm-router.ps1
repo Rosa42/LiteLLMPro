@@ -114,61 +114,66 @@ function ConvertFrom-SimpleYamlPlans {
   param([string]$Path)
   if (-not (Test-Path $Path)) { throw ("plans file missing: " + $Path) }
 
+  # Use PSCustomObject (NOT hashtable). Hashtables enumerate as key/value pairs
+  # in PowerShell pipelines and merge multi-plan fields into garbage YAML.
   $plans = New-Object System.Collections.Generic.List[object]
   $cur = $null
   $inModels = $false
 
-  Get-Content $Path -Encoding UTF8 | ForEach-Object {
-    $line = $_.TrimEnd()
-    if ($line -match '^\s*#' -or $line.Trim() -eq "") { return }
-    if ($line -match '^\s*plans\s*:') { return }
+  foreach ($raw in (Get-Content $Path -Encoding UTF8)) {
+    $line = $raw.TrimEnd()
+    if ($line -match '^\s*#' -or $line.Trim() -eq "") { continue }
+    if ($line -match '^\s*plans\s*:') { continue }
 
     if ($line -match '^\s*-\s+id\s*:\s*(.+)$') {
-      if ($null -ne $cur) { $plans.Add($cur) | Out-Null }
-      $cur = @{
+      if ($null -ne $cur) { [void]$plans.Add($cur) }
+      $cur = [pscustomobject]@{
         id           = $Matches[1].Trim().Trim('"').Trim("'")
-        display_name = $null
+        display_name = ""
         provider_id  = "volcengine"
         priority     = 10
-        base_url_env = $null
-        api_key_env  = $null
+        base_url_env = ""
+        api_key_env  = ""
         models       = New-Object System.Collections.Generic.List[string]
       }
       $inModels = $false
-      return
+      continue
     }
-    if ($null -eq $cur) { return }
+    if ($null -eq $cur) { continue }
 
-    if ($line -match '^\s+models\s*:') { $inModels = $true; return }
+    if ($line -match '^\s+models\s*:') { $inModels = $true; continue }
 
     if ($inModels -and $line -match '^\s+-\s+(.+)$') {
       $m = $Matches[1].Trim().Trim('"').Trim("'")
-      if (-not $m.StartsWith("#")) { $cur.models.Add($m) | Out-Null }
-      return
+      if (-not $m.StartsWith("#")) { [void]$cur.models.Add($m) }
+      continue
     }
 
     if ($line -match '^\s+\w') { $inModels = $false }
 
     if ($line -match '^\s+display_name\s*:\s*(.+)$') {
-      $cur.display_name = $Matches[1].Trim().Trim('"').Trim("'"); return
+      $cur.display_name = $Matches[1].Trim().Trim('"').Trim("'"); continue
     }
     if ($line -match '^\s+provider_id\s*:\s*(.+)$') {
-      $cur.provider_id = $Matches[1].Trim().Trim('"').Trim("'"); return
+      $cur.provider_id = $Matches[1].Trim().Trim('"').Trim("'"); continue
     }
     if ($line -match '^\s+priority\s*:\s*(\d+)') {
-      $cur.priority = [int]$Matches[1]; return
+      $cur.priority = [int]$Matches[1]; continue
     }
     if ($line -match '^\s+base_url_env\s*:\s*(.+)$') {
-      $cur.base_url_env = $Matches[1].Trim().Trim('"').Trim("'"); return
+      $cur.base_url_env = $Matches[1].Trim().Trim('"').Trim("'"); continue
     }
     if ($line -match '^\s+api_key_env\s*:\s*(.+)$') {
-      $cur.api_key_env = $Matches[1].Trim().Trim('"').Trim("'"); return
+      $cur.api_key_env = $Matches[1].Trim().Trim('"').Trim("'"); continue
     }
   }
-  if ($null -ne $cur) { $plans.Add($cur) | Out-Null }
+  if ($null -ne $cur) { [void]$plans.Add($cur) }
   if ($plans.Count -eq 0) { throw "No plans parsed from plans.yaml (check indent and '- id:')" }
-  # Prevent PS unwrapping a single plan into a bare hashtable (breaks .Count)
-  return , $plans.ToArray()
+
+  # Return as List wrapper so caller always sees discrete plan objects
+  $out = New-Object System.Collections.ArrayList
+  foreach ($p in $plans) { [void]$out.Add($p) }
+  return , $out
 }
 
 function ConvertTo-AsciiSafe([string]$Text) {
@@ -298,20 +303,58 @@ function Invoke-Init {
   Write-Host '  .\scripts\llm-router.ps1 add-plan -Id volc-c -BaseUrl "https://ark.cn-beijing.volces.com/api/coding/v3" -ApiKey "ark-xxx" -Models "glm-5.2,ark-code-latest" -Priority 10'
 }
 
+function Get-PythonExe {
+  $candidates = @(
+    (Join-Path $Root ".venv\Scripts\python.exe"),
+    "python",
+    "py"
+  )
+  foreach ($c in $candidates) {
+    if ($c -eq "python" -or $c -eq "py") {
+      try {
+        $null = & $c -c "import sys" 2>$null
+        if ($LASTEXITCODE -eq 0) { return $c }
+      } catch { }
+      continue
+    }
+    if (Test-Path $c) { return $c }
+  }
+  throw "Python not found. Install Python 3.11+ or create .venv"
+}
+
 function Invoke-Apply {
   if (-not (Test-Path $Paths.Plans)) {
     throw "Missing config/plans.yaml. Run init or copy plans.example.yaml."
   }
-  $plans = @(ConvertFrom-SimpleYamlPlans -Path $Paths.Plans)
-  New-LiteLLMYamlFromPlans -Plans $plans
-  Write-Ok ("Generated config/litellm.yaml from plans.yaml ({0} plan(s))" -f $plans.Count)
-  foreach ($p in $plans) {
-    $base = Get-EnvValue $p.base_url_env
-    $key = Get-EnvValue $p.api_key_env
-    $baseOk = if ($base) { "base=set" } else { "base=MISSING" }
-    $keyOk = if ($key) { "key=set" } else { "key=MISSING" }
-    $modelCsv = ($p.models -join ",")
-    Write-Host ("  - {0} prio={1} models=[{2}] [{3}, {4}]" -f $p.id, $p.priority, $modelCsv, $baseOk, $keyOk)
+  # M1-04: Python generator (validate + atomic write + backup). Fail-closed.
+  $py = Get-PythonExe
+  $env:PYTHONPATH = ((Join-Path $Root "plugins") + ";" + $env:PYTHONPATH)
+  $env:PYTHONUTF8 = "1"
+  $args = @(
+    "-m", "shared_quota_router.cli_config", "apply",
+    "--plans", $Paths.Plans,
+    "--output", $Paths.LiteLLM,
+    "--backup-dir", (Join-Path $Root "config\backups")
+  )
+  & $py @args
+  if ($LASTEXITCODE -ne 0) {
+    throw "apply failed: plans validation or generation error (previous litellm.yaml left untouched)"
+  }
+  Write-Ok "Generated config/litellm.yaml from plans.yaml (protocol-aware generator)"
+  # Summary via simple YAML plan parse (env presence only; no secrets printed)
+  try {
+    $parsed = ConvertFrom-SimpleYamlPlans -Path $Paths.Plans
+    foreach ($p in $parsed) {
+      $base = Get-EnvValue $p.base_url_env
+      $key = Get-EnvValue $p.api_key_env
+      $baseOk = if ($base) { "base=set" } else { "base=MISSING" }
+      $keyOk = if ($key) { "key=set" } else { "key=MISSING" }
+      $modelCsv = ($p.models -join ",")
+      Write-Host ("  - {0} prio={1} models=[{2}] [{3}, {4}] env={5}/{6}" -f `
+        $p.id, $p.priority, $modelCsv, $baseOk, $keyOk, $p.base_url_env, $p.api_key_env)
+    }
+  } catch {
+    Write-Info "plan summary skipped (Python apply already succeeded)"
   }
   Write-Info "After .env / plans change: run restart"
 }
@@ -366,6 +409,8 @@ function Invoke-AddPlan {
     Write-Warn ("plans.yaml already has id={0}; .env updated only. Edit models/priority manually then apply." -f $Id)
   } else {
     $modelLines = ($modelList | ForEach-Object { "      - $_" }) -join "`r`n"
+    # Default new plans to verified Chat capability (P0). Opt-in public_protocols
+    # still required under logical_models (edit plans.yaml after add-plan).
     $block = @"
 
   - id: $Id
@@ -374,6 +419,9 @@ function Invoke-AddPlan {
     priority: $Priority
     base_url_env: $BaseUrlEnv
     api_key_env: $ApiKeyEnv
+    upstream_protocol: openai_chat
+    supported_features: [text, streaming, tools]
+    supports_streaming: true
     models:
 $modelLines
 "@

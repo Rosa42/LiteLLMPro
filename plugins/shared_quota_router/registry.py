@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from shared_quota_router.models import Deployment
+from shared_quota_router.models import (
+    ApiProtocol,
+    Deployment,
+    Feature,
+    parse_api_protocol,
+    parse_feature_set,
+)
 
 
 class DeploymentRegistry:
@@ -39,6 +45,18 @@ class DeploymentRegistry:
     def all_deployments(self) -> list[Deployment]:
         return list(self._by_id.values())
 
+    def filter_by_protocol(
+        self,
+        model_group: str,
+        protocol: ApiProtocol,
+    ) -> list[Deployment]:
+        """Enabled deployments in the model group that explicitly support protocol."""
+        return [
+            d
+            for d in self.get_by_model_group(model_group)
+            if d.enabled and d.supports_protocol(protocol)
+        ]
+
     def pick_probe_deployment(
         self,
         quota_group_id: str,
@@ -59,6 +77,23 @@ class DeploymentRegistry:
         return members[0]
 
 
+def _parse_upstream_protocol(info: dict[str, Any]) -> ApiProtocol | None:
+    """Parse optional upstream_protocol. Missing → None (not universal).
+
+    Unknown non-empty values raise ValueError (configuration-invalid).
+    """
+    raw = info.get("upstream_protocol")
+    if raw is None or raw == "":
+        return None
+    return parse_api_protocol(raw)
+
+
+def _parse_supports_streaming(info: dict[str, Any], features: frozenset[Feature]) -> bool:
+    if "supports_streaming" in info:
+        return bool(info.get("supports_streaming"))
+    return Feature.STREAMING in features
+
+
 def deployment_from_model_entry(entry: dict[str, Any]) -> Deployment:
     """Map one LiteLLM model_list item to Deployment."""
     info = entry.get("model_info") or {}
@@ -69,6 +104,10 @@ def deployment_from_model_entry(entry: dict[str, Any]) -> Deployment:
         raise ValueError("model_info.deployment_id is required")
     if not model_group:
         raise ValueError("model_name / model_group is required")
+
+    features = parse_feature_set(info.get("supported_features"))
+    upstream_protocol = _parse_upstream_protocol(info)
+    supports_streaming = _parse_supports_streaming(info, features)
 
     upstream = params.get("model") or model_group
     return Deployment(
@@ -82,6 +121,9 @@ def deployment_from_model_entry(entry: dict[str, Any]) -> Deployment:
         enabled=bool(info.get("enabled", True)),
         api_base=params.get("api_base"),
         api_key_env=_api_key_env_name(params.get("api_key")),
+        upstream_protocol=upstream_protocol,
+        supported_features=features,
+        supports_streaming=supports_streaming,
         extra={"account_id": info.get("account_id")},
     )
 

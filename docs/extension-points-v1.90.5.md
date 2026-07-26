@@ -49,3 +49,14 @@ pytest tests/contract/test_c0_routing.py -q
 | 是否需要业务 patch | **否**（注册走官方 API + startup hook） |
 | 唯一注册入口 | `shared_quota_router.bootstrap.register` |
 | M0 routing_strategy | 可保留 simple-shuffle；注册自定义策略后方法被替换 |
+
+## Model capability discovery (M1-05)
+
+Stock `GET /v1/models` (v1.90.5) does **not** surface custom `model_info.public_protocols`.
+
+Project-owned endpoints (mounted in `register_proxy_startup` via `discovery_routes.mount_discovery_routes`):
+
+- `GET /v1/router/model-capabilities`
+- `GET /shared-quota/v1/model-capabilities`
+
+See `docs/model-capability-discovery.md`.

@@ -139,8 +139,22 @@ def get_strategy() -> SharedQuotaRoutingStrategy | None:
     return _STRATEGY
 
 
+def _try_mount_discovery() -> None:
+    """M1-05: project-owned capability discovery routes on proxy app."""
+    try:
+        from shared_quota_router.discovery_routes import mount_discovery_routes
+
+        if mount_discovery_routes():
+            logger.info("shared_quota_router discovery endpoints ready")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("discovery route mount skipped: %s", exc)
+
+
 async def _wait_and_register(timeout_seconds: float = 60.0, interval: float = 0.1) -> None:
     import time
+
+    # Mount discovery as early as the FastAPI app exists (router may still be None).
+    _try_mount_discovery()
 
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -150,6 +164,8 @@ async def _wait_and_register(timeout_seconds: float = 60.0, interval: float = 0.
             router = getattr(proxy_server, "llm_router", None)
             if router is not None:
                 register(router)
+                # Re-attempt mount in case app was not ready on first try
+                _try_mount_discovery()
                 logger.info("shared_quota_router registered via proxy startup hook")
                 return
         except Exception as exc:  # noqa: BLE001
@@ -163,6 +179,8 @@ async def _wait_and_register(timeout_seconds: float = 60.0, interval: float = 0.
 
 def register_proxy_startup() -> None:
     """LITELLM_WORKER_STARTUP_HOOKS target (sync)."""
+    # Best-effort immediate mount (app may already exist at hook time)
+    _try_mount_discovery()
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():

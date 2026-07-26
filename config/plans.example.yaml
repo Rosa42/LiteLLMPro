@@ -1,20 +1,25 @@
-# 套餐（Quota Group）声明式配置示例。
-# 复制为 config/plans.yaml 后用 scripts/llm-router.ps1 apply 生成 litellm.yaml。
-# 密钥只写在 .env，这里只写环境变量名。
-
-# 同一套餐 = 同一 API Key / 同一额度池 = 同一个 quota_group_id
-# priority 数字越小越优先填满（Fill First）
-# models 必须是该套餐实际上游支持的模型 ID
+# Plan (Quota Group) declarative config example.
+# Copy to config/plans.yaml then run: .\scripts\llm-router.ps1 apply
+# Secrets stay in .env — this file only holds environment variable NAMES.
+#
+# Concepts:
+#   plans[].upstream_protocol  = deployment capability (never auto-exposes public APIs)
+#   logical_models.*.public_protocols = explicit public endpoint opt-in per logical model
+#   Missing public_protocols  = model unavailable on every public endpoint
+#   Unknown / unset protocol  = deployment disabled for protocol-aware routing
 
 plans:
-  # 示例：火山 Coding Plan 账号 C
+  # Example: Volc Coding Plan (OpenAI Chat Completions only)
   - id: volc-c
     display_name: Volc Coding Plan C
     provider_id: volcengine
     priority: 10
     base_url_env: VOLC_CODING_BASE_URL
     api_key_env: VOLC_CODING_KEY_C
-    # Coding Plan OpenAI 兼容地址示例：
+    upstream_protocol: openai_chat
+    supported_features: [text, streaming, tools]
+    supports_streaming: true
+    # Coding Plan OpenAI-compatible base example:
     # https://ark.cn-beijing.volces.com/api/coding/v3
     models:
       - ark-code-latest
@@ -23,28 +28,44 @@ plans:
       - doubao-seed-2.0-code
       - doubao-seed-2.0-pro
       - doubao-seed-2.0-lite
-      # 仅当套餐文档确认支持时再打开：
-      # - kimi-k3
-      # - doubao-seed-code
 
-  # 示例：第二把火山 Key（额度独立，可做 Fill First 切换）
-  # - id: volc-d
-  #   display_name: Volc Coding Plan D
-  #   provider_id: volcengine
-  #   priority: 20
-  #   base_url_env: VOLC_CODING_BASE_URL_D
-  #   api_key_env: VOLC_CODING_KEY_D
-  #   models:
-  #     - ark-code-latest
-  #     - glm-5.2
-
-  # 示例：OpenCode Go / 其它 OpenAI 兼容套餐
+  # Example: OpenCode Go (OpenAI Chat Completions only)
   # - id: opencode-a
-  #   display_name: OpenCode A
+  #   display_name: OpenCode Go A
   #   provider_id: opencode-go
-  #   priority: 30
+  #   priority: 20
   #   base_url_env: OPENCODE_GO_BASE_URL
   #   api_key_env: OPENCODE_GO_KEY_A
+  #   upstream_protocol: openai_chat
+  #   supported_features: [text, streaming, tools]
+  #   supports_streaming: true
   #   models:
   #     - kimi-k3
   #     - glm-5.2
+
+  # Example: provider with unknown protocol (keep disabled until P0 evidence)
+  # - id: newapi-a
+  #   display_name: NewAPI A
+  #   provider_id: newapi
+  #   priority: 30
+  #   base_url_env: PLAN_NEWAPI_A_BASE_URL
+  #   api_key_env: PLAN_NEWAPI_A_API_KEY
+  #   enabled: false
+  #   # upstream_protocol intentionally unset until verified
+  #   models:
+  #     - claude-opus-4-8
+
+# Explicit public opt-in. Plan upstream_protocol alone does NOT expose endpoints.
+logical_models:
+  ark-code-latest:
+    public_protocols: [openai_chat]
+  glm-5.2:
+    public_protocols: [openai_chat]
+  glm-latest:
+    public_protocols: [openai_chat]
+  doubao-seed-2.0-code:
+    public_protocols: [openai_chat]
+  doubao-seed-2.0-pro:
+    public_protocols: [openai_chat]
+  doubao-seed-2.0-lite:
+    public_protocols: [openai_chat]

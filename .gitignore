@@ -49,3 +49,7 @@ config/plans.yaml
 # Local tools / runtime (Redis Windows binary, logs, pids)
 .tools/
 *.pid
+
+# Generated litellm.yaml timestamped backups (M1-04)
+config/backups/
+

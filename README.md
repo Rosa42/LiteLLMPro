@@ -43,6 +43,25 @@ cd local-llm-router
 
 完整约束见 [AGENTS.md](./AGENTS.md)。
 
+## 协议感知网关（进行中）
+
+多协议（Chat / Messages / Responses）设计与任务进度：
+
+| 文档 | 说明 |
+|------|------|
+| [docs/tasks.md](./docs/tasks.md) | **任务板**（Done/TODO，权威进度） |
+| [docs/protocol-aware-multi-api-gateway-plan.md](./docs/protocol-aware-multi-api-gateway-plan.md) | 设计方案 |
+| [docs/model-capability-discovery.md](./docs/model-capability-discovery.md) | 能力发现 API |
+
+**已完成：** Phase 0 + G0（G0-B）+ M1（域模型 / 配置 / 生成器 / 发现）。  
+**未完成：** M2 租约前协议过滤、M3 端点门控、M4 观测与 MVP 验收。
+
+能力发现（勿依赖 stock `/v1/models` 的自定义元数据）：
+
+```text
+GET http://127.0.0.1:4000/v1/router/model-capabilities
+```
+
 ## 包布局
 
 ```text
