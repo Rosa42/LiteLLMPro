@@ -53,8 +53,9 @@ cd local-llm-router
 | [docs/protocol-aware-multi-api-gateway-plan.md](./docs/protocol-aware-multi-api-gateway-plan.md) | 设计方案 |
 | [docs/model-capability-discovery.md](./docs/model-capability-discovery.md) | 能力发现 API |
 
-**已完成：** Phase 0 + G0（G0-B）+ M1（域模型 / 配置 / 生成器 / 发现）。  
-**未完成：** M2 租约前协议过滤、M3 端点门控、M4 观测与 MVP 验收。
+**已完成：** Phase 0 + G0（G0-B）+ M1–M4 MVP-GATE；C1–C3 转换代码（默认关闭）。  
+**进行中 / 阻塞：** 统一对外 API 的转换上线 — 见 `docs/phase-reports/remaining-dev-plan.md`（Phase 4 路径探针）。  
+**未做：** 流式转换（C4 No-Go）、Responses 直连/转换（C5 No-Go）。
 
 能力发现（勿依赖 stock `/v1/models` 的自定义元数据）：
 

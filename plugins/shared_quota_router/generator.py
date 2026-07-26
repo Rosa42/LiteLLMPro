@@ -135,10 +135,17 @@ def render_litellm_yaml(doc: PlansDocument) -> str:
             "litellm_settings:",
             "  callbacks:",
             "    - shared_quota_callback.callback_instance",
-            "  drop_params: true",
+            "  # M3-04: do not silently drop tools/stream params; gates reject first",
+            "  drop_params: false",
+            "  # G0-Native: Messages + openai/ -> chat completions URL (not Responses API).",
+            "  # Not a quota policy. Staging conversion still needs PROTOCOL_* flags.",
+            "  # Default false here; set true when enabling Messages->Chat convert path.",
+            "  use_chat_completions_url_for_anthropic_messages: false",
             "",
         ]
     )
+    # P1-02: emit logical-model policy for runtime conversion allowlists
+    lines.extend(_render_logical_models_section(doc))
     text = "\n".join(lines)
     # Final secret scan on output
     if _SECRETISH_RE.search(text):
@@ -148,6 +155,34 @@ def render_litellm_yaml(doc: PlansDocument) -> str:
     # Ensure pure ASCII
     text.encode("ascii")
     return text
+
+
+def _render_logical_models_section(doc: PlansDocument) -> list[str]:
+    """Emit ``shared_quota_logical_models`` for runtime policy reload (P1-02)."""
+    if not doc.logical_models:
+        return []
+    lines = [
+        "# Runtime policy (ignored by LiteLLM core; consumed by shared_quota_router)",
+        "shared_quota_logical_models:",
+    ]
+    for mg in sorted(doc.logical_models.keys()):
+        lm = doc.logical_models[mg]
+        lines.append(f"  {ascii_safe(mg)}:")
+        pubs = sorted(p.value for p in lm.public_protocols)
+        lines.append(f"    public_protocols: [{', '.join(pubs)}]")
+        lines.append(
+            f"    allow_conversion: {'true' if lm.allow_conversion else 'false'}"
+        )
+        if lm.allowed_conversions:
+            lines.append("    conversion_policy:")
+            lines.append("      allowed:")
+            for src, tgt in sorted(
+                lm.allowed_conversions, key=lambda x: (x[0].value, x[1].value)
+            ):
+                lines.append(f"        - from: {src.value}")
+                lines.append(f"          to: {tgt.value}")
+    lines.append("")
+    return lines
 
 
 def _render_deployment_block(
@@ -190,6 +225,19 @@ def _render_deployment_block(
     block.append(f"      supports_streaming: {'true' if streaming else 'false'}")
     if public:
         block.append(f"      public_protocols: {_protocol_yaml_list(public)}")
+    conversions = plan.resolved_conversions(model)
+    if conversions:
+        block.append("      conversions:")
+        for cap in conversions:
+            block.append(f"        - from: {cap.source.value}")
+            block.append(f"          to: {cap.target.value}")
+            block.append(f"          fidelity: {cap.fidelity.value}")
+            block.append("          streaming: false")
+            req = sorted(f.value for f in cap.request_features)
+            resp = sorted(f.value for f in cap.response_features)
+            block.append("          features:")
+            block.append(f"            request: [{', '.join(req)}]")
+            block.append(f"            response: [{', '.join(resp)}]")
     block.extend(
         [
             "    litellm_params:",
@@ -201,7 +249,6 @@ def _render_deployment_block(
         ]
     )
     return block
-
 
 def validate_generated_yaml_text(text: str) -> None:
     """Lightweight post-generation checks before replace."""

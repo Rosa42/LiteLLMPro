@@ -6,10 +6,13 @@ from typing import Any, Iterable
 
 from shared_quota_router.models import (
     ApiProtocol,
+    ConversionCapability,
     Deployment,
     Feature,
+    FidelityClass,
     parse_api_protocol,
     parse_feature_set,
+    parse_fidelity_class,
 )
 
 
@@ -57,6 +60,31 @@ class DeploymentRegistry:
             if d.enabled and d.supports_protocol(protocol)
         ]
 
+    def public_protocols_for_model(self, model_group: str) -> frozenset[ApiProtocol]:
+        """Union of public_protocols across enabled deployments for a logical model."""
+        out: set[ApiProtocol] = set()
+        for d in self.get_by_model_group(model_group):
+            if d.enabled:
+                out |= set(d.public_protocols)
+        return frozenset(out)
+
+    def model_opts_into_public(self, model_group: str, protocol: ApiProtocol) -> bool:
+        return protocol in self.public_protocols_for_model(model_group)
+
+    def has_verified_upstream(
+        self,
+        model_group: str,
+        protocol: ApiProtocol,
+    ) -> bool:
+        """Enabled deployment with matching upstream_protocol for the model group."""
+        return bool(self.filter_by_protocol(model_group, protocol))
+
+    def any_verified_upstream(self, protocol: ApiProtocol) -> bool:
+        """True if any enabled deployment in the registry speaks protocol."""
+        return any(
+            d.enabled and d.supports_protocol(protocol) for d in self.all_deployments()
+        )
+
     def pick_probe_deployment(
         self,
         quota_group_id: str,
@@ -94,6 +122,66 @@ def _parse_supports_streaming(info: dict[str, Any], features: frozenset[Feature]
     return Feature.STREAMING in features
 
 
+def _parse_public_protocols(info: dict[str, Any]) -> frozenset[ApiProtocol]:
+    """Parse model_info.public_protocols. Missing → empty (not universal)."""
+    raw = info.get("public_protocols")
+    if raw is None:
+        return frozenset()
+    if isinstance(raw, str):
+        return frozenset({parse_api_protocol(raw)})
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        raise ValueError(
+            f"public_protocols must be a list, got {type(raw).__name__}"
+        )
+    return frozenset(parse_api_protocol(p) for p in raw)
+
+
+def _parse_conversions(info: dict[str, Any]) -> tuple[ConversionCapability, ...]:
+    """Parse model_info.conversions or nested model_info.protocol.conversions."""
+    raw = info.get("conversions")
+    if raw is None:
+        nested = info.get("protocol")
+        if isinstance(nested, dict):
+            raw = nested.get("conversions")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError(f"conversions must be a list, got {type(raw).__name__}")
+    out: list[ConversionCapability] = []
+    seen: set[tuple[ApiProtocol, ApiProtocol]] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("each conversion entry must be a mapping")
+        source = parse_api_protocol(item.get("from") or item.get("source"))
+        target = parse_api_protocol(item.get("to") or item.get("target"))
+        direction = (source, target)
+        if direction in seen:
+            raise ValueError(
+                f"duplicate conversion direction {source.value} -> {target.value}"
+            )
+        seen.add(direction)
+        fidelity = parse_fidelity_class(item.get("fidelity", FidelityClass.EQUIVALENT.value))
+        streaming = bool(item.get("streaming", False))
+        feat_block = item.get("features") if isinstance(item.get("features"), dict) else {}
+        req = parse_feature_set(feat_block.get("request") if feat_block else None)
+        resp = parse_feature_set(feat_block.get("response") if feat_block else None)
+        if not req:
+            req = frozenset({Feature.TEXT})
+        if not resp:
+            resp = frozenset({Feature.TEXT})
+        out.append(
+            ConversionCapability(
+                source=source,
+                target=target,
+                request_features=req,
+                response_features=resp,
+                streaming=streaming,
+                fidelity=fidelity,
+            )
+        )
+    return tuple(out)
+
+
 def deployment_from_model_entry(entry: dict[str, Any]) -> Deployment:
     """Map one LiteLLM model_list item to Deployment."""
     info = entry.get("model_info") or {}
@@ -108,6 +196,8 @@ def deployment_from_model_entry(entry: dict[str, Any]) -> Deployment:
     features = parse_feature_set(info.get("supported_features"))
     upstream_protocol = _parse_upstream_protocol(info)
     supports_streaming = _parse_supports_streaming(info, features)
+    public_protocols = _parse_public_protocols(info)
+    conversions = _parse_conversions(info)
 
     upstream = params.get("model") or model_group
     return Deployment(
@@ -124,9 +214,10 @@ def deployment_from_model_entry(entry: dict[str, Any]) -> Deployment:
         upstream_protocol=upstream_protocol,
         supported_features=features,
         supports_streaming=supports_streaming,
+        public_protocols=public_protocols,
+        conversions=conversions,
         extra={"account_id": info.get("account_id")},
     )
-
 
 def registry_from_model_list(model_list: list[dict[str, Any]]) -> DeploymentRegistry:
     reg = DeploymentRegistry()

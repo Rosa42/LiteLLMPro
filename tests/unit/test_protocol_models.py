@@ -53,10 +53,14 @@ def test_parse_api_protocol_accepts_enum_and_casefold() -> None:
 
 def test_unknown_feature_fails_validation() -> None:
     with pytest.raises(ValueError, match="unknown feature"):
-        parse_feature("reasoning")
+        parse_feature("not_a_real_feature")
     with pytest.raises(ValueError, match="invalid feature"):
         parse_feature("")
 
+
+def test_post_mvp_features_parse() -> None:
+    assert parse_feature("reasoning") is Feature.REASONING
+    assert Feature.PROMPT_CACHE in parse_feature_set(["prompt_cache", "text"])
 
 def test_missing_protocol_does_not_imply_universal_support() -> None:
     d = Deployment(

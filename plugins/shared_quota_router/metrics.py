@@ -29,7 +29,15 @@ def set_gauge(name: str, value: float, **labels: Any) -> None:
 
 def get_counter(name: str, **labels: Any) -> float:
     with _lock:
-        return float(_counters.get(_label_key(name, labels), 0.0))
+        if labels:
+            return float(_counters.get(_label_key(name, labels), 0.0))
+        # Sum all series for this metric name (with or without labels)
+        total = 0.0
+        prefix = name + "{"
+        for key, val in _counters.items():
+            if key == name or key.startswith(prefix):
+                total += float(val)
+        return total
 
 
 def snapshot() -> dict[str, float]:

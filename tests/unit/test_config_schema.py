@@ -193,3 +193,144 @@ def test_repo_plans_example_loads() -> None:
     path = _ROOT / "config" / "plans.example.yaml"
     doc = load_plans_file(path)
     assert any(p.upstream_protocol is ApiProtocol.OPENAI_CHAT for p in doc.plans)
+
+
+def test_reject_conversion_while_allow_conversion_false() -> None:
+    data = {
+        "plans": [_base_plan(models=["claude-pilot"])],
+        "logical_models": {
+            "claude-pilot": {
+                "public_protocols": ["anthropic_messages", "openai_chat"],
+                "allow_conversion": False,
+                "conversion_policy": {
+                    "allowed": [
+                        {
+                            "from": "anthropic_messages",
+                            "to": "openai_chat",
+                            "fidelity": "equivalent",
+                        }
+                    ]
+                },
+            }
+        },
+    }
+    with pytest.raises(ConfigValidationError, match="allow_conversion is false"):
+        load_plans_dict(data)
+
+
+def test_reject_duplicate_conversion_directions_on_plan() -> None:
+    conv = {
+        "from": "anthropic_messages",
+        "to": "openai_chat",
+        "fidelity": "equivalent",
+        "streaming": False,
+        "features": {"request": ["text"], "response": ["text"]},
+    }
+    data = {
+        "plans": [
+            _base_plan(
+                models=[
+                    {
+                        "model": "claude-pilot",
+                        "conversions": [conv, dict(conv)],
+                    }
+                ]
+            )
+        ],
+        "logical_models": {
+            "claude-pilot": {
+                "public_protocols": ["openai_chat"],
+                "allow_conversion": True,
+                "conversion_policy": {
+                    "allowed": [{"from": "anthropic_messages", "to": "openai_chat"}]
+                },
+            }
+        },
+    }
+    with pytest.raises(ConfigValidationError, match="duplicate conversion"):
+        load_plans_dict(data)
+
+
+def test_accept_explicit_conversion_allowlist() -> None:
+    data = {
+        "plans": [
+            _base_plan(
+                models=[
+                    {
+                        "model": "claude-pilot",
+                        "conversions": [
+                            {
+                                "from": "anthropic_messages",
+                                "to": "openai_chat",
+                                "fidelity": "equivalent",
+                                "streaming": False,
+                                "features": {
+                                    "request": ["text"],
+                                    "response": ["text"],
+                                },
+                            }
+                        ],
+                    }
+                ]
+            )
+        ],
+        "logical_models": {
+            "claude-pilot": {
+                "public_protocols": ["anthropic_messages", "openai_chat"],
+                "allow_conversion": True,
+                "conversion_policy": {
+                    "allowed": [
+                        {
+                            "from": "anthropic_messages",
+                            "to": "openai_chat",
+                            "fidelity": "equivalent",
+                        }
+                    ]
+                },
+            }
+        },
+    }
+    doc = load_plans_dict(data)
+    lm = doc.logical_models["claude-pilot"]
+    assert lm.allow_conversion is True
+    assert (
+        ApiProtocol.ANTHROPIC_MESSAGES,
+        ApiProtocol.OPENAI_CHAT,
+    ) in lm.allowed_conversions
+    caps = doc.plans[0].resolved_conversions(doc.plans[0].models[0])
+    assert len(caps) == 1
+    assert caps[0].source is ApiProtocol.ANTHROPIC_MESSAGES
+    assert caps[0].streaming is False
+
+
+def test_reject_streaming_true_on_conversion() -> None:
+    data = {
+        "plans": [
+            _base_plan(
+                models=[
+                    {
+                        "model": "claude-pilot",
+                        "conversions": [
+                            {
+                                "from": "anthropic_messages",
+                                "to": "openai_chat",
+                                "fidelity": "equivalent",
+                                "streaming": True,
+                            }
+                        ],
+                    }
+                ]
+            )
+        ],
+        "logical_models": {
+            "claude-pilot": {
+                "public_protocols": ["openai_chat"],
+                "allow_conversion": True,
+                "conversion_policy": {
+                    "allowed": [{"from": "anthropic_messages", "to": "openai_chat"}]
+                },
+            }
+        },
+    }
+    with pytest.raises(ConfigValidationError, match="streaming"):
+        load_plans_dict(data)

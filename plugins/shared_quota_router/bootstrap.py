@@ -107,10 +107,13 @@ def get_callback() -> SharedQuotaCallback:
 
 
 def build_default_strategy(*, router: Any = None) -> SharedQuotaRoutingStrategy:
+    from shared_quota_router.logical_policy import resolve_runtime_logical_models
+
     return SharedQuotaRoutingStrategy(
         store=get_store(),
         lease_manager=get_lease_manager(),
         router=router,
+        logical_models=resolve_runtime_logical_models(),
     )
 
 
@@ -127,6 +130,14 @@ def register(router: Any, strategy: SharedQuotaRoutingStrategy | None = None) ->
     router.set_custom_routing_strategy(strat)
     _STRATEGY = strat
     _REGISTERED = True
+    # M3: keep callback capability catalog in sync with router model_list
+    try:
+        ml = getattr(router, "model_list", None)
+        if ml is None and hasattr(router, "get_model_list"):
+            ml = router.get_model_list()
+        get_callback().bind_model_list(list(ml or []))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("callback registry bind skipped: %s", exc)
     logger.info("shared_quota_router registered on router id=%s", id(router))
     return strat
 

@@ -3,9 +3,12 @@
 **Source design:** `docs/protocol-aware-multi-api-gateway-plan.md`  
 **Project:** `E:\LiteLLMPro\local-llm-router`  
 **LiteLLM pin:** `v1.90.5`  
-**Status:** In progress — Wave 0 + Milestone 1 complete; M2+ pending  
-**Scope:** Phase 0 validation and direct-protocol MVP only  
+**Status:** Conversion epic **CLOSED** (C0–C5 evaluated; C4/C5 No-Go); **staging conversion blocked** — see `docs/phase-reports/conversion-residual-risks.md`  
+**Scope:** Direct-protocol MVP complete; C2 messages→chat pilot landed (flag default false); C3 circuit isolation landed; dual-flag AND enforced  
+**Implementation plan:** `docs/superpowers/plans/2026-07-26-c1-c5-cross-protocol-conversion.md`  
 **Last progress update:** 2026-07-26
+
+**C0 kickoff (2026-07-26):** Pilot direction `anthropic_messages → openai_chat`; production `PROTOCOL_CONVERSION_ENABLED` stays false until C2-05; staging flag-on requires C3-01 **and** residual R1–R3 clear.
 
 ## 0. Implementation Progress Board
 
@@ -20,34 +23,52 @@
 | M1-03 | Config schema & validation | **DONE** | `config_schema.py`, `plans.yaml` / `plans.example.yaml` |
 | M1-04 | Config generator | **DONE** | `generator.py`, `cli_config.py`, PS1 `apply` → Python |
 | M1-05 | Model discovery public_protocols | **DONE** | `discovery.py`, `GET /v1/router/model-capabilities`, docs |
-| M2-01 | Request protocol context | **TODO** | Not started |
-| M2-02 | Pre-lease capability filter | **TODO** | Strategy still ignores protocol |
-| M2-03 | Affinity after capability filter | **TODO** | — |
-| M2-04 | Lease / first-byte invariants | **TODO** | Base lease/first-byte exist; not protocol-aware |
-| M2-05 | Protocol-aware no-route errors | **TODO** | — |
-| M3-01 | Direct Chat enable + regression | **TODO** | Chat smoke works; no protocol hard gate yet |
-| M3-02 | Messages gate / direct | **TODO** | NewAPI unverified; no Messages gate |
-| M3-03 | Responses controlled disable | **TODO** | Path still open in LiteLLM (observed 400) |
-| M3-04 | drop_params / feature validation | **TODO** | Still `drop_params: true` |
-| M4-01 | Protocol observability | **TODO** | — |
-| M4-02 | Feature-flag rollout / rollback | **TODO** | No `PROTOCOL_AWARE_GATEWAY_ENABLED` yet |
-| M4-03 | Full verification + MVP report | **TODO** | Partial E2E: `docs/phase-reports/e2e-verification-m1.md` |
-| MVP-GATE | Acceptance checklist | **OPEN** | See §8 (partial checkboxes only) |
-| C1–C5 | Post-MVP conversion | **BLOCKED** | Must not start before MVP-GATE |
+| M2-01 | Request protocol context | **DONE** | `protocol_context.py`; dual-bucket + `async_pre_call_hook` inject |
+| M2-02 | Pre-lease capability filter | **DONE** | `strategy.filter_by_capability` before Redis/lease |
+| M2-03 | Affinity after capability filter | **DONE** | incompatible affinity ignored; dual-bucket session key |
+| M2-04 | Lease / first-byte invariants | **DONE** | mismatch consumes no lease/tried; callback skips circuit |
+| M2-05 | Protocol-aware no-route errors | **DONE** | `ProtocolAwareRoutingError` OpenAI/Anthropic shapes |
+| M3-01 | Direct Chat enable + regression | **DONE** | Chat opt-in + `openai/` prefix gate; `test_m3_*` |
+| M3-02 | Messages gate / direct | **DONE** | Disabled without verified opt-in; name≠capability |
+| M3-03 | Responses controlled disable | **DONE** | Default `protocol_not_enabled`; enable docs |
+| M3-04 | drop_params / feature validation | **DONE** | `drop_params: false`; tools/stream rejected pre-drop |
+| M4-01 | Protocol observability | **DONE** | `protocol_observability.py`; route/reject counters; label hash |
+| M4-02 | Feature-flag rollout / rollback | **DONE** | `PROTOCOL_AWARE_GATEWAY_ENABLED`; ops doc; Redis preserved |
+| M4-03 | Full verification + MVP report | **DONE** | `docs/phase-reports/protocol-gateway-mvp.md` (160 pytest green) |
+| MVP-GATE | Acceptance checklist | **PASSED** | §8 all required items checked |
+| C0 | Conversion kickoff gate | **DONE** | 2026-07-26; pilot `anthropic_messages→openai_chat`; prod conversion off until C2-05 |
+| C1-01 | Fidelity / ConversionCapability domain | **DONE** | `models.py` enums + `RouteCandidate` |
+| C1-02 | Directional fidelity matrix | **DONE** | `conversion/contracts.py` |
+| C1-03 | Config allow_conversion + conversions | **DONE** | `config_schema` / `generator` / `registry` |
+| C1-04 | `resolve_route` direct before convert | **DONE** | `conversion/registry.py`; `docs/phase-reports/conversion-c1.md` |
+| C2-01 | `PROTOCOL_CONVERSION_ENABLED` + metrics | **DONE** | `record_conversion_result`; `docs/operations-protocol-conversion.md` |
+| C2-02 | G0-B request/response conversion spike | **DONE** | Go (conditional); `docs/phase-reports/conversion-c2-spike-g0b.md` |
+| C2-03 | Pilot adapter messages→chat (text) | **DONE** | `conversion/adapters/messages_to_chat.py` + fixtures |
+| C2-04 | Wire select + dispatch (prod off) | **DONE** | strategy kwargs mutate + post_call response convert |
+| C2-05 | C2 acceptance evidence pack | **DONE** | `docs/phase-reports/conversion-c2-pilot.md` |
+| C3-01 | Conversion-path circuit isolation | **DONE** | `docs/phase-reports/conversion-c3.md`; route-scoped cooldown |
+| C4-01 | Evaluate streaming conversion | **DONE (No-Go)** | `docs/conversion/streaming-evaluation.md` |
+| C5-01 | Evaluate direct Responses enablement | **DONE (No-Go)** | `docs/conversion/responses-direct-evaluation.md` |
+| C-CLOSE | Conversion epic closure | **DONE** | Board synced; suite green; residual risks: `docs/phase-reports/conversion-residual-risks.md` |
 
-### What works in production path today (after M1)
+### What works in production path today (MVP)
 
 - Plans declare `upstream_protocol` / `logical_models.public_protocols`.
-- Generator emits capability metadata into `config/litellm.yaml` (atomic + backup).
-- Clients can discover opt-in via `GET /v1/router/model-capabilities` (not stock `/v1/models`).
-- OpenCode Go / Volc Chat completions smoke against live proxy (E2E 2026-07-26).
+- Generator emits capability metadata; `drop_params: false`; atomic backups.
+- Discovery via `GET /v1/router/model-capabilities`.
+- With `PROTOCOL_AWARE_GATEWAY_ENABLED=true`: pre-lease protocol/feature filter + public opt-in gates.
+- Messages/Responses controlled disabled until verified deployments + opt-in.
+- Protocol route/reject metrics with optional label hashing; conversion metrics dormant.
+- Rollback: flag off (legacy Chat) or restore `config/backups/*.bak` — Redis quota kept.
 
-### What does **not** work yet
+### What does **not** work yet (post-MVP)
 
-- Request-path protocol injection and dual-bucket read in strategy (`metadata` vs `litellm_metadata`).
-- Filtering deployments by protocol **before** quota lease.
-- Controlled disable for Messages / Responses at the public endpoint boundary.
-- Feature flag rollback and protocol metrics.
+- **Production** cross-protocol conversion (C1–C3 code exists; flag default false; staging blocked on residual R1–R3).
+- Streaming conversion (C4 **No-Go**).
+- Direct `/v1/responses` enablement and any Responses↔* conversion (C5 **No-Go** / out of epic).
+- Live NewAPI / Messages / Responses providers in `plans.yaml` (NewAPI disabled, protocol unset).
+- Unified public API serving heterogeneous upstreams (progress gap: `docs/phase-reports/unified-api-vs-multi-protocol-progress.md`).
+- Repo-wide mypy clean on this venv (numpy stubs / types-PyYAML).
 
 ## 1. Delivery Rules
 
@@ -88,7 +109,9 @@ Every task in this document must preserve these repository invariants:
 - Responses exposure without a verified direct Responses deployment.
 - Anthropic Messages exposure based only on a Claude-like model name.
 
-Post-MVP conversion tasks are listed separately in Section 12 and must not start before MVP acceptance.
+Post-MVP conversion tasks are decomposed in Section 12 (C0–C-CLOSE) from
+`docs/superpowers/plans/2026-07-26-c1-c5-cross-protocol-conversion.md` and must
+not start runtime work before **C0** kickoff.
 
 ## 3. Dependency Graph
 
@@ -101,14 +124,34 @@ Post-MVP conversion tasks are listed separately in Section 12 and must not start
                                         |              |
                                         +------+-------+
                                                |
-                                  [ ] M2-01 -> ... -> [ ] M2-05   ← NEXT
+                                  [x] M2-01 -> ... -> [x] M2-05
                                                |
-                                  [ ] M3-01 -> ... -> [ ] M3-04
+                                  [x] M3-01 -> ... -> [x] M3-04
                                                |
-                                  [ ] M4-01 -> ... -> [ ] MVP-GATE
+                                  [x] M4-01 -> [x] M4-02 -> [x] M4-03 -> [x] MVP-GATE
+                                               |
+                                  [x] C0 (kickoff)
+                                       |
+                  +--------------------+--------------------+
+                  |                                         |
+                  v                                         v
+            [x] C1-01 -> C1-02 -> C1-03 -> C1-04      [x] C5-01 (No-Go)
+                  |          |                              |  (orthogonal:
+                  |          +---> [x] C2-03                |   direct Responses
+                  |                 adapter                 |   eval; no conversion)
+                  v                                         |
+     [x] C2-01 -+                                           |
+     [x] C2-02 -+--> [x] C2-04 -> C2-05 -> [x] C3-01        |
+       (parallel OK)              |              |          |
+                                  |              +--rec--> [x] C4-01 (No-Go)
+                                  |                 (hard dep: C2-05)
+                                  +-------------------------+
+                                                            |
+                                                      [x] C-CLOSE
 ```
 
-`G0` is resolved (**G0-B: metadata integration**). Production protocol filtering must not start without G0; M2 may now proceed.
+**Legend:** solid arrows = hard depends; `rec` = recommended before staging conversion / failure-path eval.  
+**MVP-GATE PASSED** (2026-07-26). **Conversion epic CLOSED** (2026-07-26); C4/C5 No-Go. Plan: `docs/superpowers/plans/2026-07-26-c1-c5-cross-protocol-conversion.md`.
 
 ## 4. Phase 0: LiteLLM v1.90.5 Compatibility Validation
 
@@ -407,7 +450,7 @@ E2E: `docs/phase-reports/e2e-verification-m1.md` (15/15 live checks).
 
 ## 6. Milestone 2: Capability-Aware Direct Routing — **NOT STARTED** (next)
 
-### M2-01 Add request protocol and feature context — **TODO**
+### M2-01 Add request protocol and feature context — **DONE** (2026-07-26)
 
 **Depends on:** M1-04  
 **Blocks:** M2-02
@@ -430,7 +473,9 @@ E2E: `docs/phase-reports/e2e-verification-m1.md` (15/15 live checks).
 
 **Done when:** Candidate selection receives an authoritative protocol and feature set.
 
-### M2-02 Filter protocol and features before state checks and lease acquisition — **TODO**
+**Completion:** `plugins/shared_quota_router/protocol_context.py`; callback `async_pre_call_hook`; `tests/unit/test_m2_protocol_routing.py` (M2-01 cases).
+
+### M2-02 Filter protocol and features before state checks and lease acquisition — **DONE** (2026-07-26)
 
 **Depends on:** M2-01  
 **Blocks:** M2-03
@@ -459,7 +504,9 @@ E2E: `docs/phase-reports/e2e-verification-m1.md` (15/15 live checks).
 
 **Done when:** No incompatible deployment can reach ranking or lease acquisition.
 
-### M2-03 Apply affinity after capability filtering — **TODO**
+**Completion:** `SharedQuotaSelector.filter_by_capability` + `select(protocol_ctx=...)`; mismatch raises before lease.
+
+### M2-03 Apply affinity after capability filtering — **DONE** (2026-07-26)
 
 **Depends on:** M2-02  
 **Blocks:** M2-04
@@ -485,7 +532,9 @@ E2E: `docs/phase-reports/e2e-verification-m1.md` (15/15 live checks).
 
 **Done when:** Affinity cannot bypass protocol or feature eligibility.
 
-### M2-04 Preserve lease, retry, and first-byte invariants — **TODO** (base invariants exist; need protocol integration)
+**Completion:** incompatible affinity ignored; `session_key_from_request` dual-bucket.
+
+### M2-04 Preserve lease, retry, and first-byte invariants — **DONE** (2026-07-26)
 
 **Depends on:** M2-03  
 **Blocks:** M2-05
@@ -515,7 +564,9 @@ E2E: `docs/phase-reports/e2e-verification-m1.md` (15/15 live checks).
 
 **Done when:** Existing routing invariants pass with protocol-aware filtering enabled.
 
-### M2-05 Add protocol-aware no-route and configuration errors — **TODO**
+**Completion:** protocol mismatch → no lease / no tried; callback `should_allow_retry` false; no circuit update on protocol errors.
+
+### M2-05 Add protocol-aware no-route and configuration errors — **DONE** (2026-07-26)
 
 **Depends on:** M2-04  
 **Blocks:** M3-01
@@ -543,9 +594,11 @@ E2E: `docs/phase-reports/e2e-verification-m1.md` (15/15 live checks).
 
 **Done when:** Clients and operators can distinguish configuration/capability failures from runtime provider failures.
 
-## 7. Milestone 3: Direct Endpoint Enablement — **NOT STARTED**
+**Completion:** `plugins/shared_quota_router/protocol_errors.py`; Responses → `protocol_not_enabled`; unit coverage in `test_m2_protocol_routing.py`.
 
-### M3-01 Enable and regression-test direct Chat — **TODO**
+## 7. Milestone 3: Direct Endpoint Enablement — **COMPLETE**
+
+### M3-01 Enable and regression-test direct Chat — **DONE** (2026-07-26)
 
 **Depends on:** M1-05, M2-05  
 **Blocks:** M3-02
@@ -565,7 +618,9 @@ E2E: `docs/phase-reports/e2e-verification-m1.md` (15/15 live checks).
 
 **Done when:** Current working OpenCode behavior remains intact and the observed Responses misroute cannot recur.
 
-### M3-02 Gate direct Messages on verified provider capability — **TODO**
+**Completion:** `protocol_gates.assert_endpoint_allowed` + Chat `openai/` prefix check; `tests/unit/test_m3_endpoint_gates.py`.
+
+### M3-02 Gate direct Messages on verified provider capability — **DONE** (2026-07-26)
 
 **Depends on:** M3-01, P0-03  
 **Blocks:** M3-03
@@ -586,7 +641,9 @@ E2E: `docs/phase-reports/e2e-verification-m1.md` (15/15 live checks).
 
 **Done when:** Messages is either safely direct or safely disabled.
 
-### M3-03 Keep Responses disabled until verified — **TODO**
+**Completion:** Messages disabled without opt-in + verified upstream; claude-name alone insufficient; enablement doc.
+
+### M3-03 Keep Responses disabled until verified — **DONE** (2026-07-26)
 
 **Depends on:** M3-02  
 **Blocks:** M3-04
@@ -606,7 +663,9 @@ E2E: `docs/phase-reports/e2e-verification-m1.md` (15/15 live checks).
 
 **Done when:** Responses cannot be accidentally routed to a Chat-only upstream.
 
-### M3-04 Harden `drop_params` and feature validation — **TODO**
+**Completion:** default `protocol_not_enabled`; `docs/enabling-messages-responses.md`.
+
+### M3-04 Harden `drop_params` and feature validation — **DONE** (2026-07-26)
 
 **Depends on:** M3-03  
 **Blocks:** M4-01
@@ -627,9 +686,11 @@ E2E: `docs/phase-reports/e2e-verification-m1.md` (15/15 live checks).
 
 **Done when:** Protocol capability filtering cannot be bypassed by silent parameter dropping.
 
-## 8. Milestone 4: Operations, Rollout, and Acceptance — **NOT STARTED**
+**Completion:** generator `drop_params: false`; pre-call tools/stream rejection; unit coverage.
 
-### M4-01 Add protocol observability — **TODO**
+## 8. Milestone 4: Operations, Rollout, and Acceptance — **COMPLETE**
+
+### M4-01 Add protocol observability — **DONE** (2026-07-26)
 
 **Depends on:** M3-04  
 **Blocks:** M4-02
@@ -654,7 +715,9 @@ E2E: `docs/phase-reports/e2e-verification-m1.md` (15/15 live checks).
 
 **Done when:** Operators can identify protocol routing decisions without sensitive data.
 
-### M4-02 Implement feature-gated rollout and rollback — **TODO**
+**Completion:** `protocol_observability.py`; `shared_quota_protocol_route_total` / `_reject_total`; salt hashing; `test_m4_ops.py`.
+
+### M4-02 Implement feature-gated rollout and rollback — **DONE** (2026-07-26)
 
 **Depends on:** M4-01  
 **Blocks:** M4-03
@@ -676,7 +739,9 @@ E2E: `docs/phase-reports/e2e-verification-m1.md` (15/15 live checks).
 
 **Done when:** Rollout and rollback are deterministic and documented.
 
-### M4-03 Run full verification and publish phase report — **TODO** (partial: M1 E2E report only)
+**Completion:** `feature_flags.py`; strategy/gates honor flag; `docs/operations-protocol-gateway.md`; `.env.example`.
+
+### M4-03 Run full verification and publish phase report — **DONE** (2026-07-26)
 
 **Depends on:** M4-02  
 **Blocks:** MVP-GATE
@@ -708,27 +773,29 @@ The report must include:
 
 **Done when:** All acceptance evidence is recorded and no required test is skipped.
 
-### MVP-GATE Acceptance checklist
+**Completion:** `docs/phase-reports/protocol-gateway-mvp.md` — pytest 160 passed; plans validate; secret scan OK.
+
+### MVP-GATE Acceptance checklist — **PASSED** (2026-07-26)
 
 - [x] G0 integration boundary is decided with command-backed evidence. *(G0-B, 2026-07-26)*
 - [x] LiteLLM remains pinned to `v1.90.5`.
 - [x] No business changes exist under `upstream/litellm`. *(business logic only in plugins)*
 - [x] Every enabled deployment declares an explicit upstream protocol. *(OpenCode/Volc; NewAPI disabled/unset)*
 - [x] Every public protocol is explicitly opted in per logical model. *(via `logical_models`)*
-- [ ] Protocol and feature filtering occurs before lease acquisition. **← M2**
-- [ ] Affinity cannot override capability eligibility. **← M2**
-- [ ] Protocol mismatch consumes no lease or retry attempt. **← M2**
+- [x] Protocol and feature filtering occurs before lease acquisition. **← M2**
+- [x] Affinity cannot override capability eligibility. **← M2**
+- [x] Protocol mismatch consumes no lease or retry attempt. **← M2**
 - [x] Redis remains fail-closed. *(existing shared-quota invariant)*
 - [x] No default cross-model fallback exists. *(existing config)*
 - [x] No retry occurs after visible stream output. *(existing first-byte gate; M2 must preserve)*
-- [ ] Chat traffic reaches only Chat endpoints. **← M3-01 hard guarantee**
-- [ ] Messages is direct and verified, or controlled disabled. **← M3-02**
-- [ ] Responses is controlled disabled until a verified provider exists. **← M3-03**
-- [ ] Required unsupported fields are not silently dropped. **← M3-04**
-- [ ] Errors use the requested endpoint's native shape. **← M2-05**
+- [x] Chat traffic reaches only Chat endpoints. **← M3-01 hard guarantee**
+- [x] Messages is direct and verified, or controlled disabled. **← M3-02** *(disabled until verified)*
+- [x] Responses is controlled disabled until a verified provider exists. **← M3-03**
+- [x] Required unsupported fields are not silently dropped. **← M3-04**
+- [x] Errors use the requested endpoint's native shape. **← M2-05**
 - [x] No secrets or full prompt/response bodies appear in logs. *(policy + generator secret scan; keep auditing)*
-- [ ] Feature-flag rollback preserves quota state. **← M4-02**
-- [ ] Full tests and phase report are complete. **← M4-03** *(M1 E2E only so far)*
+- [x] Feature-flag rollback preserves quota state. **← M4-02**
+- [x] Full tests and phase report are complete. **← M4-03** *(`protocol-gateway-mvp.md`; 160 pytest)*
 
 ## 9. Parallel Execution Plan
 
@@ -747,22 +814,34 @@ The report must include:
 - [x] M1-04 after M1-03.
 - [x] M1-05 after M1-04.
 
-### Wave 2: Routing — **NEXT**
+### Wave 2: Routing — **COMPLETE**
 
-- [ ] M2-01 after M1-04 (also unblocked by M1-05 for discovery).
-- [ ] M2-02 through M2-05 sequentially because they touch the same selection and lease path.
+- [x] M2-01 after M1-04 (also unblocked by M1-05 for discovery).
+- [x] M2-02 through M2-05 sequentially because they touch the same selection and lease path.
 
-### Wave 3: Endpoint enablement — **PENDING**
+### Wave 3: Endpoint enablement — **COMPLETE**
 
-- [ ] M3-01.
-- [ ] M3-02 after direct Chat regression is green.
-- [ ] M3-03 and M3-04 after Messages gating is stable.
+- [x] M3-01.
+- [x] M3-02 after direct Chat regression is green.
+- [x] M3-03 and M3-04 after Messages gating is stable.
 
-### Wave 4: Operations — **PENDING**
+### Wave 4: Operations — **COMPLETE**
 
-- [ ] M4-01.
-- [ ] M4-02.
-- [ ] M4-03.
+- [x] M4-01.
+- [x] M4-02.
+- [x] M4-03 → MVP-GATE.
+
+### Wave 5: Cross-protocol conversion — **CLOSED** (2026-07-26)
+
+Depends on C0 kickoff. Detailed work in §12. Plan: `docs/superpowers/plans/2026-07-26-c1-c5-cross-protocol-conversion.md`.
+
+- [x] C0 kickoff gate (required before any `plugins/` conversion domain/runtime work).
+- [x] C1-01 → C1-04 (contracts / schema / resolve_route).
+- [x] C2-01 and C2-02 may run in parallel; C2-03 after C1-02 (parallel with flag/spike); then C2-04 → C2-05. Prod conversion stays off until C2-05 evidence.
+- [x] C3-01 before any **staging/prod** `PROTOCOL_CONVERSION_ENABLED=true` traffic (hard for staging enablement).
+- [x] C4-01 after C2-05 (hard); C3-01 recommended before failure-path stream eval. **No-Go**.
+- [x] C5-01 after C0 only (orthogonal to C2/C3; may parallel C4); evaluate may No-Go. **No-Go**.
+- [x] C-CLOSE after C1–C3 done and C4/C5 evaluated (Go or No-Go recorded).
 
 ## 10. Suggested Atomic Change Sets
 
@@ -773,14 +852,25 @@ These are suggested review units, not instructions to commit automatically.
 3. ~~Protocol and feature domain model.~~ **done**
 4. ~~Configuration schema and validation.~~ **done**
 5. ~~Generator metadata and atomic backup behavior.~~ **done** (+ M1-05 discovery)
-6. Pre-lease protocol filtering. **← next**
-7. Affinity ordering and lease invariants.
-8. Protocol-aware error mapping.
-9. Direct Chat regression hardening.
-10. Conditional Messages enablement.
-11. Responses disablement guard.
-12. Observability and feature-gated rollout.
-13. Documentation and phase report.
+6. ~~Pre-lease protocol filtering.~~ **done** (M2)
+7. ~~Callback / context / lease invariant updates.~~ **done** (M2)
+8. ~~Protocol-aware errors.~~ **done** (M2)
+9. ~~Chat enablement and regression.~~ **done** (M3-01)
+10. ~~Conditional Messages enablement.~~ **done** (M3-02 — disabled until verified)
+11. ~~Responses disablement guard.~~ **done** (M3-03)
+12. ~~`drop_params` and feature validation.~~ **done** (M3-04)
+13. ~~Observability.~~ **done** (M4-01)
+14. ~~Feature flag and rollback.~~ **done** (M4-02)
+15. ~~Full verification report and MVP gate.~~ **done** (M4-03 / MVP-GATE)
+16. ~~C1 domain + fidelity matrix + config validators (C1-01..C1-03).~~ **done**
+17. ~~C1 `resolve_route` / ranking without live conversion (C1-04).~~ **done**
+18. ~~C2 flag + metrics + G0-B spike report (C2-01..C2-02).~~ **done**
+19. ~~C2 pilot adapter + fixtures (C2-03).~~ **done**
+20. ~~C2 wiring + acceptance pack; prod flag remains false (C2-04..C2-05).~~ **done**
+21. ~~C3 conversion circuit isolation (C3-01).~~ **done**
+22. ~~C4 streaming evaluation report (C4-01).~~ **done (No-Go)**
+23. ~~C5 Responses direct evaluation report (C5-01).~~ **done (No-Go)**
+24. ~~Conversion epic closure + board sync (C-CLOSE).~~ **done**
 
 Each change set must leave the full relevant test subset green and must not include unrelated refactoring.
 
@@ -796,46 +886,389 @@ Stop implementation and revise the design when any condition occurs:
 6. First-visible-event state cannot be shared with retry logic.
 7. Tests require disabling type checking, deleting assertions, or exposing secrets.
 8. More than three consecutive implementation attempts fail for the same task; stop, restore the last working state, and consult architecture/debugging review.
+9. **(Conversion)** C2-02 G0-B spike cannot convert request **and** reshape response/error without violating first-byte or lease invariants — escalate to thin G0-A or revise plan; do not ship half-wired convert.
+10. **(Conversion)** Conversion failure would open the same circuit key as direct traffic on the same deployment — stop until C3-01 lands. **Resolved by C3-01.**
+11. **(Conversion)** Any path would enable Responses conversion before a verified direct Responses deployment (C5 gate). **C5 No-Go keeps gate closed.**
 
-## 12. Post-MVP Backlog: Explicit Conversion Only — **NOT STARTED / BLOCKED**
+## 12. Post-MVP Backlog: Explicit Conversion Only — **CLOSED** (2026-07-26)
 
-These tasks are intentionally excluded from MVP. Do not start until MVP-GATE.
+**Plan (source of task decomposition):** `docs/superpowers/plans/2026-07-26-c1-c5-cross-protocol-conversion.md`  
+**Design:** `docs/protocol-aware-multi-api-gateway-plan.md` §6.4–6.6, §8.4–8.6, §9.4–10.5, §11.5, §12.3–12.4, §14–15  
 
-### C1 Define directional conversion contracts
+**Hard rules for this epic:**
 
-- Define source and target protocol.
-- Define feature-level fidelity: `equivalent`, `lossy_safe`, `lossy_unsafe`, `unsupported`.
-- Treat reasoning as `lossy_unsafe` until verified.
-- Treat prompt caching as `unsupported` across conversion initially.
-- Require explicit logical-model allowlisting.
+- Do not start runtime conversion until **C0** kickoff.
+- Prefer direct same-protocol over conversion (`route_mode_rank`: direct=0, convert=1).
+- Production default: `PROTOCOL_CONVERSION_ENABLED=false` until C2-05 evidence.
+- No Responses↔* conversion in this epic; C5 is **direct** Responses evaluation only.
+- Tools / reasoning / images / structured output / streaming remain rejected on the C2 pilot path.
+- Do not treat LiteLLM’s internal translators as verified project conversion.
 
-### C2 Pilot one non-streaming text-only direction
+**Recommended pilot direction (C0 may override):** `anthropic_messages` (public) → `openai_chat` (upstream).
 
-- Select one direction based on a real client need.
-- Reject tools, reasoning, images, structured output, and streaming initially.
-- Add request, response, usage, finish-reason, and error fixtures.
-- Keep production conversion disabled until acceptance evidence exists.
+---
 
-### C3 Add conversion-path circuit isolation
+### C0 Conversion kickoff gate — **DONE** (2026-07-26)
 
-- Isolate health by deployment, upstream protocol, and adapter direction.
-- Conversion failure must not poison direct traffic.
-- Do not retry deterministic conversion failures.
+**Depends on:** MVP-GATE  
+**Blocks:** All C1+ work that creates/modifies `plugins/shared_quota_router/` conversion domain or runtime (including C1-01 models). After C0 is **DONE**, docs/contract scaffolding and C1 contracts may proceed before C2 mount wiring.
 
-### C4 Evaluate streaming conversion
+**Work:**
 
-- Define first visible converted event.
-- Hold the quota lease through adapter buffering.
-- Use a configurable, test-derived buffering limit.
-- Test event ordering, backpressure, cancellation, tool deltas, usage, and mid-stream failure.
-- Never splice a second upstream after visible output.
+- Confirm staging/prod Chat is stable with `PROTOCOL_AWARE_GATEWAY_ENABLED=true`.
+- Select pilot direction and logical model (default messages→chat).
+- Record that production conversion stays off until C2-05; staging `flag=true` requires C3-01 (or written risk acceptance).
+- Flip §0 board: C0 → **DONE**; when coding starts set C1-01 → **IN PROGRESS** (do not mark the whole epic IN PROGRESS).
 
-### C5 Evaluate Responses enablement
+**Done when:** Kickoff note dated in §0 evidence column (direction + model + owners).
 
-- Require a verified direct Responses provider first.
-- Add direct Responses before any Responses conversion.
-- Validate reasoning, tools, usage, streaming events, and errors.
-- Keep Responses disabled if the provider contract is incomplete.
+**Plan ref:** Task 0
+
+---
+
+### C1-01 Fidelity + ConversionCapability domain model — **DONE** (2026-07-26)
+
+**Depends on:** C0  
+**Blocks:** C1-02
+
+**Files:**
+
+- `plugins/shared_quota_router/models.py`
+- `tests/unit/test_c1_conversion_contracts.py`
+
+**Work:**
+
+- Add `FidelityClass`: `equivalent`, `lossy_safe`, `lossy_unsafe`, `unsupported`.
+- Add `RouteMode`: `direct`, `convert`.
+- Add `ConversionCapability` (`source`=public, `target`=upstream), `RouteCandidate`.
+- Extend `Feature` for post-MVP gates: `reasoning`, `prompt_cache`, `structured_output`, `image`, `parallel_tool_calls`, `citations` (parseable; not auto-inferred unless present).
+- Extend `Deployment.conversions` and `LogicalModelProtocols.allow_conversion` / `allowed_conversions`.
+
+**Tests:**
+
+- Unknown fidelity strings (e.g. design draft `safe_for_text_tools_non_streaming`) raise.
+- Direction asymmetry preserved; `RouteMode` wire values stable.
+
+**Done when:** Unit tests green; no routing behavior change yet.
+
+**Plan ref:** Task 1
+
+---
+
+### C1-02 Directional fidelity matrix contracts — **DONE** (2026-07-26)
+
+**Depends on:** C1-01  
+**Blocks:** C1-03, C2-03
+
+**Files:**
+
+- `plugins/shared_quota_router/conversion/__init__.py`
+- `plugins/shared_quota_router/conversion/contracts.py`
+- `tests/unit/test_c1_conversion_contracts.py`
+
+**Work:**
+
+- Register pilot directions: messages→chat and chat→messages (C2 implements one).
+- Per-feature fidelity: reasoning=`lossy_unsafe`; prompt_cache=`unsupported`; C2 pilot tools/streaming=`unsupported`; text=`equivalent`.
+- `validate_request_against_fidelity` rejects `lossy_unsafe` / `unsupported` before lease.
+- Define `ConvertedRequest` / `ConvertedResponse` with `warnings` + `dropped_fields`.
+
+**Tests:**
+
+- Text-only non-stream accepted; tools/stream/reasoning/cache rejected with `ProtocolAwareRoutingError`.
+
+**Done when:** Matrix tests green; no adapter implementation required.
+
+**Plan ref:** Task 2
+
+---
+
+### C1-03 Config schema: allow_conversion + conversions — **DONE** (2026-07-26)
+
+**Depends on:** C1-02  
+**Blocks:** C1-04
+
+**Files:**
+
+- `plugins/shared_quota_router/config_schema.py`
+- `plugins/shared_quota_router/generator.py`
+- `plugins/shared_quota_router/registry.py`
+- `tests/unit/test_config_schema.py` / `test_generator.py` / `test_registry.py`
+
+**Work:**
+
+- Parse logical-model `allow_conversion` + `conversion_policy.allowed[]`.
+- Emit/parse deployment `model_info.protocol.conversions[]`.
+- Fail-closed validators (design §8.6): duplicate directions; invalid fidelity; `streaming: true` without proven adapter (C1 requires `streaming: false`); conversion declared while `allow_conversion: false`; public protocol only via conversion without matching allowlist + deployment conversion + target upstream; conversion target with no capable deployment.
+- Default existing plans: no conversions; `allow_conversion` defaults false.
+
+**Tests:**
+
+- Each §8.6 rejection case; happy path with explicit allowlist.
+
+**Done when:** Generator + load validate green; MVP plans unchanged in behavior.
+
+**Plan ref:** Task 3
+
+---
+
+### C1-04 `resolve_route` — direct preferred over convert — **DONE** (2026-07-26)
+
+**Depends on:** C1-03  
+**Blocks:** C2-04
+
+**Files:**
+
+- `plugins/shared_quota_router/conversion/registry.py` and/or `registry.py`
+- `plugins/shared_quota_router/strategy.py`
+- `tests/unit/test_c1_conversion_contracts.py`
+- Regression: `tests/unit/test_m2_protocol_routing.py`, `test_m3_endpoint_gates.py`
+
+**Work:**
+
+- `resolve_route(...)` → `RouteCandidate | None` (direct if `upstream_protocol == public`; else convert if flag+policy+capability+fidelity).
+- Pre-lease filter includes convert candidates only when `PROTOCOL_CONVERSION_ENABLED` (wire flag stub OK if C2-01 not landed — default treat as false).
+- Ranking key: `(route_mode_rank, affinity, priority, inflight, last_success, deployment_id)`.
+- Affinity ignored if not in post-capability set; convert mismatch consumes no lease/tried.
+
+**Tests:**
+
+- Direct wins when both exist; convert only when no direct + policy; flag off ⇒ no convert.
+
+**Done when:** C1 board rows DONE; short note `docs/phase-reports/conversion-c1.md`.
+
+**Plan ref:** Task 4–5
+
+---
+
+### C2-01 Feature flag + conversion observability hooks — **DONE** (2026-07-26)
+
+**Depends on:** C1-04  
+**Blocks:** C2-04
+
+**Files:**
+
+- `plugins/shared_quota_router/feature_flags.py`
+- `plugins/shared_quota_router/protocol_observability.py`
+- `.env.example`
+- `docs/operations-protocol-conversion.md`
+- `tests/unit/test_c2_messages_to_chat_pilot.py`
+
+**Work:**
+
+- Add `PROTOCOL_CONVERSION_ENABLED` default **false**.
+- `record_conversion_result` increments reserved `shared_quota_protocol_conversion_*` counters with safe labels.
+- Document dual-flag matrix with `PROTOCOL_AWARE_GATEWAY_ENABLED` and rollback (flag off; Redis preserved).
+
+**Tests:**
+
+- Default false; explicit record increments counters; no secrets in log helpers.
+
+**Done when:** Ops doc + `.env.example` updated.
+
+**Plan ref:** Task 6
+
+---
+
+### C2-02 Spike: can G0-B host request/response conversion? — **DONE** (2026-07-26)
+
+**Depends on:** C0 (may run in parallel with C2-01 / C1 after C0; **must** finish before C2-04)  
+**Blocks:** C2-04 (mount point decision)
+
+**Files:**
+
+- `docs/phase-reports/conversion-c2-spike-g0b.md`
+- Optional harness under `tests/contract/`
+
+**Work:**
+
+- Prove or refute on LiteLLM v1.90.5:
+  1. Pre-call can rewrite Messages body to Chat upstream fields consistent with selected deployment.
+  2. Response/error can be reshaped to Anthropic Messages for the client without breaking streaming/first-byte accounting.
+- **Go:** proceed C2-04 on G0-B hooks. **No-Go:** thin G0-A front adapter ADR; still no `upstream/litellm` edits.
+
+**Done when:** Dated spike report with go/no-go and chosen mount points.
+
+**Plan ref:** Task 7
+
+---
+
+### C2-03 Pilot adapter `anthropic_messages → openai_chat` (text-only, non-stream) — **DONE** (2026-07-26)
+
+**Depends on:** C1-02  
+**Blocks:** C2-04
+
+**Files:**
+
+- `plugins/shared_quota_router/conversion/adapters/base.py`
+- `plugins/shared_quota_router/conversion/adapters/messages_to_chat.py`
+- `plugins/shared_quota_router/conversion/dispatch.py`
+- `tests/fixtures/conversion/messages_to_chat/`
+- `tests/unit/test_c2_messages_to_chat_pilot.py`
+
+**Work:**
+
+- Implement `ProtocolConverter`: `convert_request`, `convert_response`, `convert_error`.
+- Map system/messages text, max_tokens, usage, finish/stop reason, error envelope.
+- Reject tools/images/reasoning/streaming; non-empty `dropped_fields` ⇒ error (C2 allowlist empty).
+- Fixtures: basic + multiturn request; response; usage; finish-reason map; error.
+
+**Tests:**
+
+- Fixture round-trips; tools request raises `FEATURE_UNSUPPORTED`.
+
+**Done when:** Adapter unit tests green; not yet wired to live select unless C2-04.
+
+**Plan ref:** Task 8
+
+---
+
+### C2-04 Wire selection + dispatch (production still disabled by default) — **DONE** (2026-07-26)
+
+**Depends on:** C2-01, C2-02 (Go), C2-03, C1-04  
+**Blocks:** C2-05, C3-01
+
+**Files:**
+
+- `plugins/shared_quota_router/strategy.py`
+- `plugins/shared_quota_router/callbacks.py`
+- `plugins/shared_quota_router/protocol_gates.py`
+- Unit + contract tests as needed
+
+**Work:**
+
+- On convert select, write dual-bucket metadata: `shared_quota_route_mode`, `shared_quota_conversion`.
+- Pre-call / success/failure hooks per C2-02 mount decision; call dispatch converter.
+- Flag off ⇒ never select convert even if configured.
+- Deterministic conversion errors: no retry; no circuit mutation (until C3 specializes keys).
+- Record `route_mode=convert` + conversion metrics; must not bypass M3 public opt-in.
+
+**Tests:**
+
+- Flag on + policy → convert candidate; flag off → Messages gate/no-route unchanged; M2/M3 regression green.
+
+**Done when:** Suite subset green; prod default flag still false.
+
+**Plan ref:** Task 9
+
+---
+
+### C2-05 C2 acceptance evidence pack — **DONE** (2026-07-26)
+
+**Depends on:** C2-04  
+**Blocks:** Operator decision to enable conversion. **Staging/prod `PROTOCOL_CONVERSION_ENABLED=true` additionally requires C3-01** (or dated risk-acceptance note in the pilot report).
+
+**Files:**
+
+- `docs/phase-reports/conversion-c2-pilot.md`
+- Optional `config/plans.conversion-pilot.example.yaml` (no secrets)
+
+**Work:**
+
+- Document direction, model, fixtures, commands, uncovered features, rollback.
+- Explicit: production `PROTOCOL_CONVERSION_ENABLED=false` until operators accept evidence.
+- Go/No-Go for staging flag=true.
+
+**Done when:** Report published; §0 C2 rows marked DONE with evidence links.
+
+**Plan ref:** Task 10
+
+---
+
+### C3-01 Conversion-path circuit isolation — **DONE** (2026-07-26)
+
+**Depends on:** C2-04  
+**Blocks:** Staging/prod conversion traffic; recommended before C4/C5 eval that exercises failure paths
+
+**Files:**
+
+- `plugins/shared_quota_router/callbacks.py`
+- `plugins/shared_quota_router/state_store.py`
+- `plugins/shared_quota_router/strategy.py`
+- `tests/unit/test_c3_conversion_circuit_isolation.py`
+- `docs/phase-reports/conversion-c3.md`
+
+**Work:**
+
+- Isolate health by `deployment_id` + `upstream_protocol` + adapter direction (or `route_mode`).
+- Suggested keys: `cooldown:dep:{id}:direct` vs `cooldown:dep:{id}:convert:{source}>{target}`.
+- Deterministic conversion failures: no quota/provider circuit; no cross-deployment retry.
+- Upstream 5xx/quota still classified normally but must not cool down sibling **direct** path on same deployment.
+
+**Tests:**
+
+- Convert cooldown does not block direct; mapping errors not retried; quota not marked exhausted.
+
+**Done when:** Tests green; §0 C3-01 DONE.
+
+**Plan ref:** Task 11
+
+---
+
+### C4-01 Evaluate streaming conversion (go/no-go) — **DONE (No-Go)** (2026-07-26)
+
+**Depends on:** C2-05 (contracts exist); C3-01 recommended  
+**Blocks:** Any `streaming: true` on conversion capabilities
+
+**Files:**
+
+- `docs/conversion/streaming-evaluation.md`
+- `tests/unit/test_c4_streaming_conversion_eval.py` (document required invariants; may skip/impl reject)
+
+**Work (evaluate, do not enable by default):**
+
+- Define first **converted** visible event as first-byte boundary (§15.3).
+- Lease held across adapter buffering; configurable max buffer latency from tests.
+- Prove or refute: event order, backpressure, cancellation, usage, mid-stream failure; never splice second upstream after visible output.
+- Default expectation: **No-Go**; keep matrix `STREAMING=unsupported`.
+
+**Done when:** Dated go/no-go report linked from §0; runtime streaming convert remains off unless Go.
+
+**Plan ref:** Task 12
+
+---
+
+### C5-01 Evaluate direct Responses enablement (no conversion) — **DONE (No-Go)** (2026-07-26)
+
+**Depends on:** C0 (and MVP-GATE). **Orthogonal to C2/C3** — does not require conversion pilot or circuit isolation. May run parallel to C4.  
+**Blocks:** Public `/v1/responses` opt-in; **blocks any future Responses conversion epic**
+
+**Files:**
+
+- `docs/conversion/responses-direct-evaluation.md`
+- `tests/unit/test_c5_responses_direct_eval.py`
+- `docs/enabling-messages-responses.md` (C5 No-Go note)
+
+**Work:**
+
+- Inventory: is there a verified `upstream_protocol: openai_responses` deployment?
+- Contract: path, reasoning/tools/usage/stream/errors as declared — **not** Chat bridge.
+- Require explicit `public_protocols: [openai_responses]`.
+- **Forbidden in this task:** `openai_chat ↔ openai_responses` conversion.
+
+**Done when:** Go → document enable steps + gate relaxation per model; No-Go → keep controlled disable. §0 updated.
+
+**Plan ref:** Task 13
+
+---
+
+### C-CLOSE Conversion epic closure — **DONE** (2026-07-26)
+
+**Depends on:** C1-04, C2-05, C3-01; C4-01 and C5-01 evaluated (Go or No-Go recorded)
+
+**Work:**
+
+- Sync §0 statuses and evidence.
+- Confirm conversion counters stay 0 on default production path (flag false).
+- Full `pytest tests/ -q`.
+- If C2-02 chose G0-A: add `docs/adr/ADR-conversion-adapter-boundary.md`.
+
+**Done when:** Epic board consistent; no open “TODO” without explicit deferral note.
+
+**Plan ref:** Task 14
+
+**Closure notes:** G0-B retained for lab/unit only (no G0-A ADR yet). C4/C5 recorded **No-Go**. Production `PROTOCOL_CONVERSION_ENABLED` remains **false**. Staging enablement requires C3-01 **plus** residual R1–R3 clear (`docs/phase-reports/conversion-residual-risks.md`). Dual-flag AND enforced via `is_conversion_routing_active()`.
+---
 
 ## 13. Task Completion Template
 

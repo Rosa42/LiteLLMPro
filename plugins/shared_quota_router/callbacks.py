@@ -27,9 +27,17 @@ from shared_quota_router.models import (
     QuotaGroupStatus,
     RequestRoutingContext,
 )
+from shared_quota_router.protocol_context import (
+    get_metadata_value,
+    inject_protocol_into_data,
+)
+from shared_quota_router.protocol_errors import ProtocolAwareRoutingError
+from shared_quota_router.protocol_gates import enforce_pre_call_gates
+from shared_quota_router.registry import DeploymentRegistry
 from shared_quota_router.state_store import StateStore, StateStoreError
 from shared_quota_router.strategy import (
     context_from_request_kwargs,
+    model_list_to_registry,
     save_request_context,
 )
 
@@ -63,6 +71,7 @@ class SharedQuotaCallback(_CustomLoggerBase):
         alert_hook: AlertHook | None = None,
         short_cooldown_seconds: int = 30,
         reqctx_ttl_seconds: int = 360,
+        registry: DeploymentRegistry | None = None,
     ) -> None:
         self.store = store
         self.lease_manager = lease_manager
@@ -70,6 +79,35 @@ class SharedQuotaCallback(_CustomLoggerBase):
         self.alert_hook = alert_hook or _default_alert
         self.short_cooldown_seconds = short_cooldown_seconds
         self.reqctx_ttl_seconds = reqctx_ttl_seconds
+        self._registry = registry
+
+    def bind_registry(self, registry: DeploymentRegistry | None) -> None:
+        """Attach / refresh deployment capability catalog for M3 endpoint gates."""
+        self._registry = registry
+
+    def bind_model_list(self, model_list: list[dict[str, Any]] | None) -> None:
+        if not model_list:
+            return
+        try:
+            self._registry = model_list_to_registry(model_list)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("bind_model_list failed: %s", exc)
+
+    def _resolve_registry(self) -> DeploymentRegistry | None:
+        if self._registry is not None:
+            return self._registry
+        # Best-effort: pull live router model_list from proxy
+        try:
+            from litellm.proxy import proxy_server
+
+            router = getattr(proxy_server, "llm_router", None)
+            ml = getattr(router, "model_list", None) if router is not None else None
+            if ml:
+                self._registry = model_list_to_registry(list(ml))
+                return self._registry
+        except Exception:  # noqa: BLE001
+            return self._registry
+        return None
 
     def _ctx(self, kwargs: dict[str, Any]) -> RequestRoutingContext:
         return context_from_request_kwargs(
@@ -82,6 +120,27 @@ class SharedQuotaCallback(_CustomLoggerBase):
         save_request_context(ctx, self.store, ttl_seconds=self.reqctx_ttl_seconds)
 
     # --- LiteLLM CustomLogger-compatible hooks ---
+
+    async def async_pre_call_hook(
+        self,
+        user_api_key_dict: Any = None,
+        cache: Any = None,
+        data: dict | None = None,
+        call_type: Any = None,
+        **_extra: Any,
+    ) -> Any:
+        """M2 inject protocol + M3 endpoint/feature gates (before drop_params)."""
+        if not isinstance(data, dict):
+            return data
+        try:
+            inject_protocol_into_data(data, call_type=call_type, overwrite=False)
+            registry = self._resolve_registry()
+            enforce_pre_call_gates(data, call_type=call_type, registry=registry)
+        except ProtocolAwareRoutingError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pre_call protocol gate failed: %s", exc)
+        return data
 
     async def async_log_success_event(
         self, kwargs: dict, response_obj: Any, start_time: Any, end_time: Any
@@ -106,15 +165,60 @@ class SharedQuotaCallback(_CustomLoggerBase):
         response: Any = None,
         **_extra: Any,
     ) -> Any:
-        """Required by LiteLLM proxy post-call path; pass response through."""
-        # Prefer logging hooks for quota accounting; this only satisfies the
-        # CustomLogger contract so success responses are not rejected.
+        """Quota accounting + optional C2 response conversion (G0-B mount)."""
         if isinstance(data, dict):
             try:
                 self.on_success(data)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("post_call_success on_success failed: %s", exc)
+            try:
+                response = self._maybe_convert_success_response(data, response)
+            except ProtocolAwareRoutingError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("post_call conversion failed: %s", exc)
         return response
+
+    def _maybe_convert_success_response(self, data: dict[str, Any], response: Any) -> Any:
+        from shared_quota_router.conversion.dispatch import (
+            CONVERSION_DIR_META_KEY,
+            ROUTE_MODE_META_KEY,
+            convert_upstream_response,
+            parse_direction_key,
+        )
+        from shared_quota_router.feature_flags import (
+            is_native_messages_chat_path_active,
+        )
+        from shared_quota_router.protocol_context import get_metadata_value
+
+        # G0-Native：由 LiteLLM 原生 adapter 返回 Anthropic 形态，跳过项目 G0-B reshape
+        if is_native_messages_chat_path_active():
+            return response
+
+        mode = get_metadata_value(data, ROUTE_MODE_META_KEY)
+        if mode != "convert":
+            return response
+        direction = parse_direction_key(get_metadata_value(data, CONVERSION_DIR_META_KEY))
+        if direction is None:
+            return response
+        # Prefer dict-shaped responses; ModelResponse-like objects expose model_dump/dict
+        payload: dict[str, Any] | None = None
+        if isinstance(response, dict):
+            payload = response
+        elif hasattr(response, "model_dump"):
+            try:
+                payload = response.model_dump()
+            except Exception:  # noqa: BLE001
+                payload = None
+        elif hasattr(response, "dict"):
+            try:
+                payload = response.dict()
+            except Exception:  # noqa: BLE001
+                payload = None
+        if not isinstance(payload, dict):
+            return response
+        converted = convert_upstream_response(payload, direction=direction)
+        return converted.payload
 
     async def async_post_call_failure_hook(
         self,
@@ -124,12 +228,84 @@ class SharedQuotaCallback(_CustomLoggerBase):
         traceback_str: str | None = None,
         **_extra: Any,
     ) -> Any:
+        """Account failure + reshape client error when possible (P2).
+
+        LiteLLM only honors a returned ``HTTPException`` for error transform.
+        """
         if isinstance(request_data, dict):
             try:
                 self.on_failure(request_data, original_exception)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("post_call_failure on_failure failed: %s", exc)
-        return None
+
+        http_exc = self._failure_to_http_exception(request_data, original_exception)
+        return http_exc
+
+    def _failure_to_http_exception(
+        self,
+        request_data: Any,
+        original_exception: Exception,
+    ) -> Any:
+        """Return fastapi HTTPException or None (P2-01 / P2-02)."""
+        try:
+            from fastapi import HTTPException
+        except ImportError:
+            return None
+
+        data = request_data if isinstance(request_data, dict) else {}
+
+        # P2-01: protocol gate / conversion mapping errors → native shape
+        proto_exc: ProtocolAwareRoutingError | None = None
+        if isinstance(original_exception, ProtocolAwareRoutingError):
+            proto_exc = original_exception
+        elif isinstance(data.get("exception"), ProtocolAwareRoutingError):
+            proto_exc = data["exception"]
+        if proto_exc is not None:
+            return HTTPException(status_code=400, detail=proto_exc.to_public_error())
+
+        # P2-02: convert-route upstream failures → public protocol error body
+        from shared_quota_router.conversion.dispatch import (
+            CONVERSION_DIR_META_KEY,
+            ROUTE_MODE_META_KEY,
+            convert_upstream_error,
+            parse_direction_key,
+        )
+        from shared_quota_router.protocol_context import get_metadata_value
+
+        mode = get_metadata_value(data, ROUTE_MODE_META_KEY)
+        if mode != "convert":
+            return None
+        direction = parse_direction_key(get_metadata_value(data, CONVERSION_DIR_META_KEY))
+        if direction is None:
+            return None
+
+        status = (
+            getattr(original_exception, "status_code", None)
+            or getattr(original_exception, "status", None)
+            or 502
+        )
+        try:
+            status_i = int(status)
+        except (TypeError, ValueError):
+            status_i = 502
+
+        upstream_body: dict[str, Any]
+        detail = getattr(original_exception, "detail", None)
+        if isinstance(detail, dict):
+            upstream_body = detail
+        else:
+            upstream_body = {
+                "error": {
+                    "message": str(original_exception),
+                    "type": "api_error",
+                }
+            }
+        try:
+            shaped = convert_upstream_error(upstream_body, direction=direction)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("convert_upstream_error failed: %s", exc)
+            return None
+        return HTTPException(status_code=status_i, detail=shaped)
 
     # NOTE: Do NOT override async_post_call_streaming_hook.
     # LiteLLM calls it with response=<accumulated content STRING>. Returning
@@ -153,6 +329,10 @@ class SharedQuotaCallback(_CustomLoggerBase):
 
     def should_allow_retry(self, kwargs: dict[str, Any]) -> bool:
         """Gate for cross-deployment retry (strategy also enforces via Redis)."""
+        # M2-04: deterministic protocol/capability errors never retry across deployments
+        exc = kwargs.get("exception")
+        if isinstance(exc, ProtocolAwareRoutingError):
+            return False
         ctx = self._ctx(kwargs)
         if ctx.first_byte_sent:
             inc("shared_quota_stream_failure_after_first_byte_total")
@@ -224,11 +404,35 @@ class SharedQuotaCallback(_CustomLoggerBase):
         dep_id = meta.get("deployment_id")
         provider_id = meta.get("provider_id")
 
+        # P1-03: always release lease before any early return (incl. protocol errors)
         if self.lease_manager and qg:
             try:
                 self.lease_manager.release(quota_group_id=qg, request_id=request_id)
             except StateStoreError as exc:
                 logger.warning("lease release failed: %s", exc)
+
+        # M2-05: pre-call protocol/capability failures are not provider/quota events
+        if isinstance(response_obj, ProtocolAwareRoutingError) or isinstance(
+            kwargs.get("exception"), ProtocolAwareRoutingError
+        ):
+            exc = (
+                response_obj
+                if isinstance(response_obj, ProtocolAwareRoutingError)
+                else kwargs.get("exception")
+            )
+            assert isinstance(exc, ProtocolAwareRoutingError)
+            inc(
+                "shared_quota_protocol_no_route_total",
+                reason=exc.reason.value,
+                protocol=exc.protocol.value if exc.protocol else "none",
+            )
+            logger.info(
+                "protocol_no_route reason=%s protocol=%s model_group=%s — no circuit update",
+                exc.reason.value,
+                exc.protocol.value if exc.protocol else None,
+                exc.model_group,
+            )
+            return
 
         if qg:
             ctx.mark_tried(qg)
@@ -270,6 +474,12 @@ class SharedQuotaCallback(_CustomLoggerBase):
                 quota_group_id=qg,
                 deployment_id=dep_id,
                 provider_id=provider_id,
+                route_mode=str(
+                    get_metadata_value(kwargs, "shared_quota_route_mode") or "direct"
+                ),
+                conversion_dir=get_metadata_value(
+                    kwargs, "shared_quota_conversion"
+                ),
             )
         except StateStoreError as exc:
             logger.error("fail-closed store update on failure: %s", exc)
@@ -299,6 +509,8 @@ class SharedQuotaCallback(_CustomLoggerBase):
         quota_group_id: str | None,
         deployment_id: str | None,
         provider_id: str | None,
+        route_mode: str = "direct",
+        conversion_dir: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc)
 
@@ -364,6 +576,35 @@ class SharedQuotaCallback(_CustomLoggerBase):
             )
             return
 
+        # C3: convert-path infra failures stay on route-scoped keys so they do not
+        # open provider / deployment circuits that would poison sibling direct traffic.
+        # Account/quota scopes above still apply (shared fate on the same account).
+        if route_mode == "convert":
+            if not deployment_id:
+                return
+            until = now + timedelta(
+                seconds=c.retry_after_seconds or self.short_cooldown_seconds
+            )
+            ttl = c.retry_after_seconds or self.short_cooldown_seconds
+            route_key = self.store.route_cooldown_key(
+                route_mode="convert",
+                conversion_dir=conversion_dir,
+            )
+            self.store.put_route_cooldown(
+                deployment_id,
+                route_key,
+                cooldown_until=until,
+                ttl_seconds=ttl,
+            )
+            logger.info(
+                "convert_route_cooldown deployment_id=%s route_key=%s kind=%s until=%s",
+                deployment_id,
+                route_key,
+                c.kind.value,
+                until.isoformat(),
+            )
+            return
+
         if c.kind == FailureKind.PROVIDER_OUTAGE and provider_id:
             self.store.put_provider_status(
                 provider_id,
@@ -377,6 +618,7 @@ class SharedQuotaCallback(_CustomLoggerBase):
             until = now + timedelta(
                 seconds=c.retry_after_seconds or self.short_cooldown_seconds
             )
+            ttl = c.retry_after_seconds or self.short_cooldown_seconds
             self.store.put_deployment_state(
                 DeploymentRuntimeState(
                     deployment_id=deployment_id,
@@ -384,7 +626,14 @@ class SharedQuotaCallback(_CustomLoggerBase):
                     cooldown_until=until,
                     last_failure_at=now,
                 ),
-                ttl_seconds=c.retry_after_seconds or self.short_cooldown_seconds,
+                ttl_seconds=ttl,
+            )
+            # Mirror direct onto route key for unified C3 checks
+            self.store.put_route_cooldown(
+                deployment_id,
+                "direct",
+                cooldown_until=until,
+                ttl_seconds=ttl,
             )
 
     def _classify(self, kwargs: dict[str, Any], response_obj: Any) -> FailureClassification:
@@ -432,8 +681,19 @@ class SharedQuotaCallback(_CustomLoggerBase):
         litellm_params = kwargs.get("litellm_params") or {}
         model_info = kwargs.get("model_info") or litellm_params.get("model_info") or {}
         metadata = kwargs.get("metadata") or {}
+        litellm_metadata = kwargs.get("litellm_metadata") or {}
+        nested_meta = (
+            litellm_params.get("metadata") if isinstance(litellm_params, dict) else None
+        ) or {}
 
-        for source in (model_info, metadata, litellm_params, kwargs):
+        for source in (
+            model_info,
+            metadata,
+            litellm_metadata,
+            nested_meta,
+            litellm_params,
+            kwargs,
+        ):
             if not isinstance(source, dict):
                 continue
             for key in (

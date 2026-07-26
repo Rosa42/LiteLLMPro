@@ -19,18 +19,21 @@ Client → LiteLLM Proxy (shared_quota_router)
 
 扩展点：`docs/extension-points-v1.90.5.md`。
 
-## 协议感知网关（进行中）
+## 协议感知网关（状态）
 
 | 阶段 | 状态 |
 |------|------|
 | Phase 0 + G0（G0-B 元数据集成） | **已完成** |
 | M1 协议域模型 / 配置 / 生成器 / 能力发现 | **已完成** |
-| M2 租约前协议过滤 | **未开始** |
-| M3 端点门控（Messages / Responses） | **未开始** |
-| M4 观测与特性开关 / MVP 验收 | **未开始** |
+| M2 租约前协议过滤 | **已完成** |
+| M3 端点门控（Chat 启用；Messages/Responses 受控） | **已完成** |
+| M4 观测与特性开关 / MVP 验收 | **已完成（MVP-GATE PASSED）** |
+| C1–C3 转换契约 / 试点 / 熔断隔离 | **代码完成，默认 flag off** |
+| 统一对外 + 转换上线 | **进行中** — 见 `docs/phase-reports/remaining-dev-plan.md` |
 
 权威任务板：`docs/tasks.md` §0。  
 设计方案：`docs/protocol-aware-multi-api-gateway-plan.md`。  
-能力发现：`GET /v1/router/model-capabilities`（见 `docs/model-capability-discovery.md`）。
+能力发现：`GET /v1/router/model-capabilities`（见 `docs/model-capability-discovery.md`）。  
+差距总结：`docs/phase-reports/unified-api-vs-multi-protocol-progress.md`。
 
-**现状要点：** 配置与发现已能声明/列出 `public_protocols`；运行时 strategy **尚未**按协议过滤部署。
+**现状要点：** 同协议多供应商 Chat 路由已可用；跨协议转换运行时默认关闭；staging 启用前须通过 remaining-dev-plan Phase 4 探针。

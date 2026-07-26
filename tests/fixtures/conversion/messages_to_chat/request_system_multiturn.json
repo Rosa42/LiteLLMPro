@@ -1,0 +1,10 @@
+{
+  "model": "pilot",
+  "system": "You are helpful.",
+  "max_tokens": 64,
+  "messages": [
+    {"role": "user", "content": "hi"},
+    {"role": "assistant", "content": "hello"},
+    {"role": "user", "content": [{"type": "text", "text": "again"}]}
+  ]
+}

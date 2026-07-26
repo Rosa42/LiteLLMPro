@@ -25,6 +25,7 @@ KEY_PROVIDER = "sq:provider:{provider_id}"
 KEY_QUOTA = "sq:quota:{quota_group_id}"
 KEY_WINDOW = "sq:window:{quota_group_id}:{window_type}"
 KEY_DEPLOYMENT = "sq:deployment:{deployment_id}"
+KEY_ROUTE_COOLDOWN = "sq:cooldown:dep:{deployment_id}:{route_key}"
 KEY_AFFINITY = "sq:affinity:{session_hash}"
 KEY_AFFINITY_META = "sq:affinity-meta:{session_hash}"
 KEY_AFFINITY_IDX = "sq:affinity-idx:{quota_group_id}"
@@ -212,6 +213,73 @@ class StateStore:
             )
         except Exception as exc:  # noqa: BLE001
             raise StateStoreError(f"redis set deployment failed: {exc}") from exc
+
+    @staticmethod
+    def route_cooldown_key(
+        *,
+        route_mode: str = "direct",
+        conversion_dir: str | None = None,
+    ) -> str:
+        """Stable Redis suffix: ``direct`` or ``convert:{source}>{target}``."""
+        if route_mode == "convert" and conversion_dir:
+            return f"convert:{conversion_dir}"
+        if route_mode == "convert":
+            return "convert:unknown"
+        return "direct"
+
+    def is_route_in_cooldown(
+        self,
+        deployment_id: str,
+        route_key: str,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        """True when the route-specific cooldown key is active (C3)."""
+        now = now or datetime.now(timezone.utc)
+        try:
+            raw = self._r.get(
+                self._k(
+                    KEY_ROUTE_COOLDOWN,
+                    deployment_id=deployment_id,
+                    route_key=route_key,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise StateStoreError(f"redis get route cooldown failed: {exc}") from exc
+        if raw is None:
+            return False
+        data = _loads(raw)
+        until = _parse_dt(data.get("cooldown_until"))
+        if until is None:
+            return bool(data.get("is_in_cooldown"))
+        return until > now
+
+    def put_route_cooldown(
+        self,
+        deployment_id: str,
+        route_key: str,
+        *,
+        cooldown_until: datetime,
+        ttl_seconds: int | None = None,
+    ) -> None:
+        payload = {
+            "deployment_id": deployment_id,
+            "route_key": route_key,
+            "is_in_cooldown": True,
+            "cooldown_until": _fmt_dt(cooldown_until),
+        }
+        try:
+            self._r.set(
+                self._k(
+                    KEY_ROUTE_COOLDOWN,
+                    deployment_id=deployment_id,
+                    route_key=route_key,
+                ),
+                json.dumps(payload),
+                ex=ttl_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise StateStoreError(f"redis set route cooldown failed: {exc}") from exc
 
     # ----- request routing context (P0-1 / P0-3) -----
 

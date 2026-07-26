@@ -558,4 +558,7 @@ general_settings:
 litellm_settings:
   callbacks:
     - shared_quota_callback.callback_instance
-  drop_params: true
+  drop_params: false
+  # G0-Native: Messages + openai/ -> chat completions URL (not Responses API).
+  # Not a quota policy. Keep false until staging conversion checklist is green.
+  use_chat_completions_url_for_anthropic_messages: false
