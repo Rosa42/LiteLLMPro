@@ -1,0 +1,14 @@
+{
+  "layer": "layer2_proxy",
+  "deployment_id": "newapi-a-claude-opus-4-8",
+  "protocol": "anthropic_messages",
+  "model": "claude-opus-4-8",
+  "http_status": 400,
+  "ttfe_ms": null,
+  "duration_ms": null,
+  "event_count": 0,
+  "notes": [
+    "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"no deployment for 'claude-opus-4-8' supports required features ['streaming', 'text'] on anthropic_messages\"}}"
+  ],
+  "pass": false
+}

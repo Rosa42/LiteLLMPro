@@ -4,7 +4,10 @@
 
 Runtime selection / dispatch uses `is_conversion_routing_active()` =
 
-`PROTOCOL_AWARE_GATEWAY_ENABLED ∧ PROTOCOL_CONVERSION_ENABLED`
+`PROTOCOL_AWARE_GATEWAY_ENABLED ∧ PROTOCOL_CONVERSION_ENABLED ∧ messages_chat_path_ready`
+
+其中本期 **Messages→Chat path ready = native-only**（`is_native_messages_chat_path_active()`）；
+**G0-A mount 不计入** readiness（P0-G0A）。
 
 Raw env bits remain visible in `flag_snapshot()`; only the AND unlocks convert.
 
@@ -13,27 +16,44 @@ Raw env bits remain visible in `flag_snapshot()`; only the AND unlocks convert.
 | false | false | Legacy Chat selection; Messages/Responses gated; **no convert** |
 | true | false | MVP protocol-aware direct routes only; **no convert** (default) |
 | false | true | **Misconfig:** convert still **off** (AND fails); Messages gates unchanged |
-| true | true | Direct preferred; explicit convert candidates allowed when configured |
+| true | true | Direct preferred; explicit convert candidates allowed when **native path ready** |
 
 Defaults: gateway may be `true` in MVP ops; **conversion always defaults `false`**.
 
-**Staging/prod `CONVERSION=true` is blocked** until a **proven path** clears residual R1–R3:
+**A6 vs A7（P1-SCOPE）**：A6=discovery 静态 `public_protocols`；A7=运行时门控（conversion/native flags）。列出 ≠ 可达；关 conversion 时 kimi 运行时不可达但 discovery 仍可能列出。
 
-1. **Preferred — G0-Native:** `litellm_settings.use_chat_completions_url_for_anthropic_messages: true` (or env `LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES=true`) + project gates; disable project G0-B double rewrite; P4-Native green.  
-2. **Fallback — G0-A:** only if Native Spike fails; mount-ready AND conversion flag; see design §4.
+### Native SoT（P1-SOT）— 本期 Messages→Chat **native-only**
 
-Path readiness must be part of conversion activation (native ready **or** `g0a_mount_ready`) — flag alone is unsafe under default Responses routing.
+**唯一批准输入：** CLI apply 带 `--enable-messages-chat-native`（写入 YAML）。
+禁止口头批准；禁止依赖裸 env 作为生产 SoT。
+
+```text
+yaml.use_chat_completions_url_for_anthropic_messages =
+  (--enable-messages-chat-native)
+  ∧ (∃ logical: allow_conversion ∧ anthropic_messages→openai_chat)
+```
+
+无 flag / 无 convert policy → 必须生成 **`false`**。
+
+运行时：若 litellm 属性已加载且为 `False`，**禁止**再 OR/回退遗留 env；
+仅属性缺失时才严格解析 env（仅 `1`/`true`/`yes`/`on` 为真）。
 
 ```powershell
-# Keep conversion off (safe)
-$env:PROTOCOL_CONVERSION_ENABLED = "false"
+# 批准并生成 YAML true（须 plans 含 Messages→Chat convert policy）
+python -m shared_quota_router.cli_config apply `
+  --plans config/plans.yaml `
+  --output config/litellm.yaml `
+  --enable-messages-chat-native
 
-# Staging only after residual-risk clear (R1–R3) + proven path
+# Staging：gateway + conversion + 已写入的 native YAML
 $env:PROTOCOL_AWARE_GATEWAY_ENABLED = "true"
 $env:PROTOCOL_CONVERSION_ENABLED = "true"
-$env:LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES = "true"  # G0-Native
+# 不要用 LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES 作为生产开关
 # restart proxy/worker
 ```
+
+**Staging/prod `CONVERSION=true` 仍须** proven path（本期 = G0-Native YAML true）+ project gates；P4-Native green。
+G0-A 本期 out of scope（`g0a_mount_ready` 不激活 Messages→Chat）。
 
 Redis quota / affinity / lease keys are **never** flushed when toggling these flags.
 
@@ -41,15 +61,14 @@ Redis quota / affinity / lease keys are **never** flushed when toggling these fl
 
 | Level | Steps |
 |-------|--------|
-| **L0** | If G0-A was mounted: restore stock `POST /v1/messages` (unmount / redeploy). Flag-off alone does **not** undo route swap. Native-only deploys: L0 N/A. |
-| **Native off** | Clear `use_chat_completions_url_for_anthropic_messages` / env + restart (openai/ Messages may return to `/responses`). |
-| L1 | `PROTOCOL_CONVERSION_ENABLED=false` → restart. Direct traffic unchanged; wrapper may remain if G0-A mounted. |
+| **L0** | 本期 G0-A **N/A**（未 mount）。若将来启用 G0-A：须独立开关 + unmount，另开 ADR。 |
+| **L1** | `PROTOCOL_CONVERSION_ENABLED=false` → restart。Direct traffic unchanged。 |
+| **L2（native off）** | ① `apply` **无** `--enable-messages-chat-native` → YAML `use_chat_completions_url_for_anthropic_messages: false`；② **删除** native 相关 env（如 `LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES`）；③ **重启**；④ 确认 `g0a_mount_ready==False`（本期应恒假）；⑤ convert 候选 = 0。**禁止**仅用 env=`false` 回滚。 |
 | L1b | Keep `PROTOCOL_AWARE_GATEWAY_ENABLED=true` unless whole gateway must roll back. |
-| L2 | If conversion-only public was applied: remove that protocol from `public_protocols`, set `allow_conversion: false`, strip deployment `conversions`, re-apply (or restore `config/backups/litellm.yaml.*.bak`). |
-| L3 | `PROTOCOL_AWARE_GATEWAY_ENABLED=false` → legacy Chat; Messages still gated. |
-| L4 | Roll back plugin build + L0 if applicable. |
+| L3 | restore `config/backups/litellm.yaml.*.bak` 或 `PROTOCOL_AWARE_GATEWAY_ENABLED=false` → legacy Chat。 |
+| L4 | 去掉 convert-only public / `allow_conversion`；或回滚插件构建。 |
 
-**After L0/L1/L2 verify:** convert candidates = 0; conversion counters stop; Chat direct OK; **single** POST `/v1/messages` handler; Redis `sq:quota:*` untouched.
+**After L0/L1/L2 verify:** convert candidates = 0；conversion counters stop；Chat direct OK；Redis `sq:quota:*` untouched。
 
 ## Metrics
 
@@ -66,12 +85,12 @@ Labels: `direction` (registry keys only), `result`, `reason` (enum / routing rea
 
 Default candidate: public `anthropic_messages` → upstream `openai_chat` (text, non-streaming only).
 
-**Conversion-only Messages** (no direct Anthropic upstream) is allowed only when **all** hold:
+**Conversion-only Messages**（无 direct Anthropic upstream）本期仅经 **G0-Native**：
 
-1. G0-A `/v1/messages` mount succeeded (`is_g0a_messages_mounted()`),
+1. YAML `use_chat_completions_url_for_anthropic_messages: true`（CLI `--enable-messages-chat-native` + convert policy）,
 2. `PROTOCOL_AWARE_GATEWAY_ENABLED` ∧ `PROTOCOL_CONVERSION_ENABLED`,
 3. logical `allow_conversion` + matching `conversions` + registered adapter (`public_reachable`).
 
-Without (1), do **not** set `PROTOCOL_CONVERSION_ENABLED=true` — gate may allow traffic that still hits stock G0-B `/responses` misroute.
+G0-A mount **本期不作为** path ready；勿指望 unmount 以外的 flag-off 来关掉误 mount 的 G0-A。
 
-See thin G0-A design/plan: `docs/superpowers/specs/2026-07-26-thin-g0a-front-adapter-design.md`.
+See thin G0-A design/plan（历史备选，本期禁用）: `docs/superpowers/specs/2026-07-26-thin-g0a-front-adapter-design.md`.

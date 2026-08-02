@@ -1,0 +1,12 @@
+{
+  "layer": "layer2_proxy",
+  "deployment_id": "volc-c-msg-glm-5.2",
+  "protocol": "anthropic_messages",
+  "model": "glm-5.2",
+  "http_status": 200,
+  "ttfe_ms": 1828.9999999979045,
+  "duration_ms": 1828.9999999979045,
+  "event_count": 32,
+  "notes": [],
+  "pass": true
+}

@@ -1,0 +1,14 @@
+{
+  "layer": "layer2_proxy",
+  "deployment_id": "opencode-a-chat-kimi-k3",
+  "protocol": "openai_chat",
+  "model": "kimi-k3",
+  "http_status": 400,
+  "ttfe_ms": null,
+  "duration_ms": null,
+  "event_count": 0,
+  "notes": [
+    "{\"error\":{\"message\":\"no deployment for 'kimi-k3' supports required features ['streaming', 'text'] on openai_chat\",\"type\":\"None\",\"param\":\"None\",\"code\":\"400\",\"provider_specific_fields\":{\"error\":{\"messag"
+  ],
+  "pass": false
+}

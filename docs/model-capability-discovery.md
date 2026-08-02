@@ -65,6 +65,7 @@ curl -sS http://127.0.0.1:4000/v1/router/model-capabilities \
 4. Unknown protocol strings are dropped; they never appear as supported.
 5. Listing **never** implies all of `openai_chat` / `openai_responses` / `anthropic_messages`.
 6. **Presence ≠ routability**: exhausted quotas, cooldowns, or missing deployments can still fail at request time.
+7. **A6 vs A7（P1-SCOPE）**：A6=discovery **静态**列出已配置 `public_protocols`（不随 conversion flag 隐藏）；A7=`PROTOCOL_CONVERSION_ENABLED` 等为**运行时**门控，discovery 列出 ≠ 运行时可达。
 
 ## Relationship to `/v1/models`
 

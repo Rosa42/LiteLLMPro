@@ -1,28 +1,32 @@
-# C5 Direct Responses Enablement Evaluation
+# C5 / Responses Public Enablement Evaluation
 
-**Date:** 2026-07-26  
-**Verdict:** **No-Go** — keep `/v1/responses` controlled disabled for public traffic.
+**Date:** 2026-07-26 (revised)  
+**Verdict:** **Conditional** — absolute No-Go superseded for **LiteLLM native bridge** under **Policy A** (`docs/adr/ADR-unified-public-responses.md`).
 
 ## Inventory
 
 | Check | Result |
 |-------|--------|
-| Enabled plan deployment with `upstream_protocol: openai_responses` | **None** in current `config/plans.yaml` set (OpenCode/Volc are `openai_chat`; NewAPI disabled/unset) |
-| Contract path `/responses` (mock) | Covered in P0 (`test_p0_direct_protocol_paths.py`) as harness only |
-| Live verified Responses provider | **Missing** |
-| `public_protocols: [openai_responses]` opt-in | Would fail config validation without a Responses upstream |
+| Enabled plan deployment with `upstream_protocol: openai_responses` | **None** (OpenCode/Volc are `openai_chat`; NewAPI disabled) |
+| Native Responses→Chat bridge (pin v1.90.5) | **Available** (`use_chat_completions_api` / completion transformation) |
+| Live verified Responses-native provider | **Missing** (optional under Policy A) |
+| Shared Chat+Messages `model_group` | **None** — use separate logical models |
 
-## Hard gates (unchanged)
+## Policy
 
-1. Require verified direct Responses deployment **before** any public opt-in.
-2. **Forbidden in this epic:** `openai_chat ↔ openai_responses` conversion.
-3. Validate reasoning / tools / usage / streaming / errors against that provider before enablement.
+| Profile | Responses public via Chat/Messages native bridge |
+|---------|--------------------------------------------------|
+| staging / internal / test | Allowed when flags + `route_candidate_enabled` + logical allowlist |
+| production | Policy **A**: only M3-green directions with explicit production approve; direct Responses provider optional |
 
-## Recommendation
+## Still forbidden (near term)
 
-Keep M3-03 controlled disable. When a Responses-capable account is available:
+1. Project-owned Responses↔Chat/Messages adapters / custom SSE (until native fails).  
+2. Faking one `model_group` that mixes GLM/Kimi Chat with Claude Messages.  
+3. Global “conversion on” without per-direction readiness.
 
-1. Add plan `upstream_protocol: openai_responses` + contract probe.
-2. Opt-in logical model `public_protocols`.
-3. Update `docs/enabling-messages-responses.md` with Go evidence.
-4. Only then consider a separate Responses conversion epic.
+## Next
+
+1. M1: `glm-5.2` canary Responses public → `/chat/completions` via native.  
+2. M2: NewAPI probe → separate Claude logical model.  
+3. M3: lease/accounting/cancel + mid-stream no-reselect (S1).

@@ -1,0 +1,14 @@
+{
+  "layer": "layer1_upstream",
+  "deployment_id": "opencode-a-chat-deepseek-v4-flash",
+  "protocol": "openai_chat",
+  "model": "deepseek-v4-flash",
+  "ttfe_ms": 2217.9999999934807,
+  "duration_ms": 2217.9999999934807,
+  "event_count": 31,
+  "saw_done": true,
+  "saw_message_stop": false,
+  "error_in_body": false,
+  "notes": [],
+  "pass": true
+}
