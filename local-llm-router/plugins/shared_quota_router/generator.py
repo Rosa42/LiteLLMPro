@@ -62,7 +62,7 @@ def litellm_model_for_protocol(protocol: ApiProtocol | None, model_name: str) ->
 
 def _feature_yaml_list(features: frozenset[Feature]) -> str:
     # Stable order for deterministic apply
-    order = [Feature.TEXT, Feature.STREAMING, Feature.TOOLS]
+    order = [Feature.TEXT, Feature.STREAMING, Feature.TOOLS, Feature.REASONING]
     items = [f.value for f in order if f in features]
     for f in sorted(features, key=lambda x: x.value):
         if f.value not in items:

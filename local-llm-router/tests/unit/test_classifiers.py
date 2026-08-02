@@ -42,6 +42,46 @@ def test_auth_invalid() -> None:
     assert result.scope == "quota_group"
 
 
+def test_opencode_credits_error_is_quota_exhaust_not_auth() -> None:
+    err = UpstreamError(
+        http_status=401,
+        body={
+            "type": "error",
+            "error": {
+                "type": "CreditsError",
+                "message": "Insufficient balance. Manage your billing here: https://opencode.ai/...",
+            },
+        },
+        provider_id="opencode-go",
+    )
+    result = clf.classify(err)
+    assert result.kind == FailureKind.SHARED_QUOTA_EXHAUSTED
+    assert result.scope == "quota_group"
+    assert is_high_confidence_quota_exhaust(result)
+
+
+def test_volc_account_quota_exceeded_parses_reset_at() -> None:
+    err = UpstreamError(
+        http_status=429,
+        body={
+            "error": {
+                "code": "AccountQuotaExceeded",
+                "message": (
+                    "You have exceeded the 5-hour usage quota. "
+                    "It will reset at 2026-08-02 16:18:29 +0800 CST."
+                ),
+                "type": "TooManyRequests",
+            }
+        },
+        provider_id="volcengine",
+    )
+    result = clf.classify(err)
+    assert result.kind == FailureKind.SHARED_QUOTA_EXHAUSTED
+    assert result.reset_at is not None
+    assert result.reset_at.year == 2026
+    assert result.reset_at.hour == 16
+
+
 def test_content_policy_not_cross_account() -> None:
     err = UpstreamError(
         http_status=400,

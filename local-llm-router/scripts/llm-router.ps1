@@ -334,7 +334,9 @@ function Invoke-Apply {
     "-m", "shared_quota_router.cli_config", "apply",
     "--plans", $Paths.Plans,
     "--output", $Paths.LiteLLM,
-    "--backup-dir", (Join-Path $Root "config\backups")
+    "--backup-dir", (Join-Path $Root "config\backups"),
+    # Keep Messages→Chat G0-Native when plans still have convert (e.g. kimi-k3)
+    "--enable-messages-chat-native"
   )
   & $py @args
   if ($LASTEXITCODE -ne 0) {

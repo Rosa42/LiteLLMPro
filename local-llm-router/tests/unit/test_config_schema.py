@@ -365,8 +365,16 @@ def test_repo_plans_yaml_loads() -> None:
     chat = next(p for p in doc.plans if p.id == "opencode-a-chat")
     assert chat.upstream_protocol is ApiProtocol.OPENAI_CHAT
     chat_model_names = {m.model for m in chat.models}
-    assert "deepseek-v4-flash" in chat_model_names
     assert "kimi-k3" in chat_model_names
+    assert "deepseek-v4-flash" not in chat_model_names
+    ds_chat = next(p for p in doc.plans if p.id == "deepseek-official-chat")
+    ds_msg = next(p for p in doc.plans if p.id == "deepseek-official-msg")
+    assert ds_chat.upstream_protocol is ApiProtocol.OPENAI_CHAT
+    assert ds_msg.upstream_protocol is ApiProtocol.ANTHROPIC_MESSAGES
+    assert ds_chat.quota_group_id == "deepseek-official"
+    assert ds_msg.quota_group_id == "deepseek-official"
+    ds_models = {m.model for m in ds_chat.models}
+    assert ds_models == {"deepseek-v4-flash", "deepseek-v4-pro"}
     newapi = next(p for p in doc.plans if p.id == "newapi-a")
     assert newapi.upstream_protocol is ApiProtocol.ANTHROPIC_MESSAGES
     assert newapi.enabled is True
@@ -376,6 +384,11 @@ def test_repo_plans_yaml_loads() -> None:
     assert public_protocols_for(doc, "deepseek-v4-flash") == frozenset(
         {ApiProtocol.OPENAI_CHAT, ApiProtocol.ANTHROPIC_MESSAGES}
     )
+    assert public_protocols_for(doc, "deepseek-v4-pro") == frozenset(
+        {ApiProtocol.OPENAI_CHAT, ApiProtocol.ANTHROPIC_MESSAGES}
+    )
+    assert doc.logical_models["deepseek-v4-flash"].allow_conversion is False
+    assert doc.logical_models["deepseek-v4-pro"].allow_conversion is False
     assert public_protocols_for(doc, "claude-opus-4-8") == frozenset(
         {ApiProtocol.ANTHROPIC_MESSAGES}
     )

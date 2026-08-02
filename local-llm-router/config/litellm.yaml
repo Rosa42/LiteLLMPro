@@ -35,7 +35,7 @@ model_list:
       priority: 20
       enabled: true
       upstream_protocol: anthropic_messages
-      supported_features: [text, streaming]
+      supported_features: [text, streaming, tools, reasoning]
       supports_streaming: true
       public_protocols: [anthropic_messages]
     litellm_params:
@@ -55,13 +55,163 @@ model_list:
       priority: 30
       enabled: true
       upstream_protocol: anthropic_messages
-      supported_features: [text, streaming]
+      supported_features: [text, streaming, tools, reasoning]
       supports_streaming: true
       public_protocols: [anthropic_messages]
     litellm_params:
       model: anthropic/claude-opus-4-8
       api_base: os.environ/PLAN_NEWAPI_A_BASE_URL
       api_key: os.environ/PLAN_NEWAPI_A_API_KEY
+      timeout: 300
+
+
+  # --- DeepSeek Official (Chat) (quota_group: deepseek-official, priority: 15) ---
+  - model_name: deepseek-v4-flash
+    model_info:
+      deployment_id: deepseek-official-chat-deepseek-v4-flash
+      provider_id: deepseek
+      account_id: deepseek-official
+      quota_group_id: deepseek-official
+      priority: 15
+      enabled: true
+      upstream_protocol: openai_chat
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
+      public_protocols: [openai_chat, anthropic_messages]
+    litellm_params:
+      model: openai/deepseek-v4-flash
+      api_base: os.environ/DEEPSEEK_BASE_URL
+      api_key: os.environ/DEEPSEEK_API_KEY
+      timeout: 300
+
+  - model_name: deepseek-v4-pro
+    model_info:
+      deployment_id: deepseek-official-chat-deepseek-v4-pro
+      provider_id: deepseek
+      account_id: deepseek-official
+      quota_group_id: deepseek-official
+      priority: 15
+      enabled: true
+      upstream_protocol: openai_chat
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
+      public_protocols: [openai_chat, anthropic_messages]
+    litellm_params:
+      model: openai/deepseek-v4-pro
+      api_base: os.environ/DEEPSEEK_BASE_URL
+      api_key: os.environ/DEEPSEEK_API_KEY
+      timeout: 300
+
+
+  # --- DeepSeek Official (Messages) (quota_group: deepseek-official, priority: 15) ---
+  - model_name: deepseek-v4-flash
+    model_info:
+      deployment_id: deepseek-official-msg-deepseek-v4-flash
+      provider_id: deepseek
+      account_id: deepseek-official
+      quota_group_id: deepseek-official
+      priority: 15
+      enabled: true
+      upstream_protocol: anthropic_messages
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
+      public_protocols: [openai_chat, anthropic_messages]
+    litellm_params:
+      model: anthropic/deepseek-v4-flash
+      api_base: os.environ/DEEPSEEK_ANTHROPIC_BASE_URL
+      api_key: os.environ/DEEPSEEK_API_KEY
+      timeout: 300
+
+  - model_name: deepseek-v4-pro
+    model_info:
+      deployment_id: deepseek-official-msg-deepseek-v4-pro
+      provider_id: deepseek
+      account_id: deepseek-official
+      quota_group_id: deepseek-official
+      priority: 15
+      enabled: true
+      upstream_protocol: anthropic_messages
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
+      public_protocols: [openai_chat, anthropic_messages]
+    litellm_params:
+      model: anthropic/deepseek-v4-pro
+      api_base: os.environ/DEEPSEEK_ANTHROPIC_BASE_URL
+      api_key: os.environ/DEEPSEEK_API_KEY
+      timeout: 300
+
+
+  # --- MiniMax Official (Messages) (quota_group: minimax-official, priority: 25) ---
+  - model_name: MiniMax-M3
+    model_info:
+      deployment_id: minimax-official-msg-MiniMax-M3
+      provider_id: minimax
+      account_id: minimax-official
+      quota_group_id: minimax-official
+      priority: 25
+      enabled: true
+      upstream_protocol: anthropic_messages
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
+      public_protocols: [anthropic_messages]
+    litellm_params:
+      model: anthropic/MiniMax-M3
+      api_base: os.environ/MINIMAX_ANTHROPIC_BASE_URL
+      api_key: os.environ/MINIMAX_API_KEY
+      timeout: 300
+
+  - model_name: MiniMax-M2.7
+    model_info:
+      deployment_id: minimax-official-msg-MiniMax-M2.7
+      provider_id: minimax
+      account_id: minimax-official
+      quota_group_id: minimax-official
+      priority: 25
+      enabled: true
+      upstream_protocol: anthropic_messages
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
+      public_protocols: [anthropic_messages]
+    litellm_params:
+      model: anthropic/MiniMax-M2.7
+      api_base: os.environ/MINIMAX_ANTHROPIC_BASE_URL
+      api_key: os.environ/MINIMAX_API_KEY
+      timeout: 300
+
+  - model_name: MiniMax-M2.7-highspeed
+    model_info:
+      deployment_id: minimax-official-msg-MiniMax-M2.7-highspeed
+      provider_id: minimax
+      account_id: minimax-official
+      quota_group_id: minimax-official
+      priority: 25
+      enabled: true
+      upstream_protocol: anthropic_messages
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
+      public_protocols: [anthropic_messages]
+    litellm_params:
+      model: anthropic/MiniMax-M2.7-highspeed
+      api_base: os.environ/MINIMAX_ANTHROPIC_BASE_URL
+      api_key: os.environ/MINIMAX_API_KEY
+      timeout: 300
+
+  - model_name: MiniMax-M2.5
+    model_info:
+      deployment_id: minimax-official-msg-MiniMax-M2.5
+      provider_id: minimax
+      account_id: minimax-official
+      quota_group_id: minimax-official
+      priority: 25
+      enabled: true
+      upstream_protocol: anthropic_messages
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
+      public_protocols: [anthropic_messages]
+    litellm_params:
+      model: anthropic/MiniMax-M2.5
+      api_base: os.environ/MINIMAX_ANTHROPIC_BASE_URL
+      api_key: os.environ/MINIMAX_API_KEY
       timeout: 300
 
 
@@ -92,32 +242,6 @@ model_list:
       api_key: os.environ/OPENCODE_GO_KEY_A
       timeout: 300
 
-  - model_name: deepseek-v4-flash
-    model_info:
-      deployment_id: opencode-a-chat-deepseek-v4-flash
-      provider_id: opencode-go
-      account_id: opencode-a
-      quota_group_id: opencode-a
-      priority: 10
-      enabled: true
-      upstream_protocol: openai_chat
-      supported_features: [text, streaming]
-      supports_streaming: true
-      public_protocols: [openai_chat, anthropic_messages]
-      conversions:
-        - from: anthropic_messages
-          to: openai_chat
-          fidelity: lossy_safe
-          streaming: false
-          features:
-            request: [text]
-            response: [text]
-    litellm_params:
-      model: openai/deepseek-v4-flash
-      api_base: os.environ/OPENCODE_GO_BASE_URL
-      api_key: os.environ/OPENCODE_GO_KEY_A
-      timeout: 300
-
 
 router_settings:
   routing_strategy: simple-shuffle
@@ -143,16 +267,27 @@ litellm_settings:
 
 # Runtime policy (ignored by LiteLLM core; consumed by shared_quota_router)
 shared_quota_logical_models:
+  MiniMax-M2.5:
+    public_protocols: [anthropic_messages]
+    allow_conversion: false
+  MiniMax-M2.7:
+    public_protocols: [anthropic_messages]
+    allow_conversion: false
+  MiniMax-M2.7-highspeed:
+    public_protocols: [anthropic_messages]
+    allow_conversion: false
+  MiniMax-M3:
+    public_protocols: [anthropic_messages]
+    allow_conversion: false
   claude-opus-4-8:
     public_protocols: [anthropic_messages]
     allow_conversion: false
   deepseek-v4-flash:
     public_protocols: [anthropic_messages, openai_chat]
-    allow_conversion: true
-    conversion_policy:
-      allowed:
-        - from: anthropic_messages
-          to: openai_chat
+    allow_conversion: false
+  deepseek-v4-pro:
+    public_protocols: [anthropic_messages, openai_chat]
+    allow_conversion: false
   glm-5.2:
     public_protocols: [anthropic_messages]
     allow_conversion: false
