@@ -31,8 +31,5 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Nested git repository (standalone project)
-local-llm-router/
-
 # Logs
 *.log
