@@ -1,0 +1,71 @@
+# Plan (Quota Group) declarative config example.
+# Copy to config/plans.yaml then run: .\scripts\llm-router.ps1 apply
+# Secrets stay in .env — this file only holds environment variable NAMES.
+#
+# Concepts:
+#   plans[].upstream_protocol  = deployment capability (never auto-exposes public APIs)
+#   logical_models.*.public_protocols = explicit public endpoint opt-in per logical model
+#   Missing public_protocols  = model unavailable on every public endpoint
+#   Unknown / unset protocol  = deployment disabled for protocol-aware routing
+
+plans:
+  # Example: Volc Coding Plan (OpenAI Chat Completions only)
+  - id: volc-c
+    display_name: Volc Coding Plan C
+    provider_id: volcengine
+    priority: 10
+    base_url_env: VOLC_CODING_BASE_URL
+    api_key_env: VOLC_CODING_KEY_C
+    upstream_protocol: openai_chat
+    supported_features: [text, streaming, tools]
+    supports_streaming: true
+    # Coding Plan OpenAI-compatible base example:
+    # https://ark.cn-beijing.volces.com/api/coding/v3
+    models:
+      - ark-code-latest
+      - glm-5.2
+      - glm-latest
+      - doubao-seed-2.0-code
+      - doubao-seed-2.0-pro
+      - doubao-seed-2.0-lite
+
+  # Example: OpenCode Go (OpenAI Chat Completions only)
+  # - id: opencode-a
+  #   display_name: OpenCode Go A
+  #   provider_id: opencode-go
+  #   priority: 20
+  #   base_url_env: OPENCODE_GO_BASE_URL
+  #   api_key_env: OPENCODE_GO_KEY_A
+  #   upstream_protocol: openai_chat
+  #   supported_features: [text, streaming, tools]
+  #   supports_streaming: true
+  #   models:
+  #     - kimi-k3
+  #     - glm-5.2
+
+  # Example: provider with unknown protocol (keep disabled until P0 evidence)
+  # - id: newapi-a
+  #   display_name: NewAPI A
+  #   provider_id: newapi
+  #   priority: 30
+  #   base_url_env: PLAN_NEWAPI_A_BASE_URL
+  #   api_key_env: PLAN_NEWAPI_A_API_KEY
+  #   enabled: false
+  #   # upstream_protocol intentionally unset until verified
+  #   models:
+  #     - claude-opus-4-8
+
+# Explicit public opt-in. Plan upstream_protocol alone does NOT expose endpoints.
+logical_models:
+  ark-code-latest:
+    public_protocols: [openai_chat]
+  glm-5.2:
+    public_protocols: [openai_chat]
+  glm-latest:
+    public_protocols: [openai_chat]
+  doubao-seed-2.0-code:
+    public_protocols: [openai_chat]
+  doubao-seed-2.0-pro:
+    public_protocols: [openai_chat]
+  doubao-seed-2.0-lite:
+    public_protocols: [openai_chat]

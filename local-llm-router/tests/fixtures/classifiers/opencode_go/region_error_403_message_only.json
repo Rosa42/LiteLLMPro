@@ -1,0 +1,10 @@
+{
+  "http_status": 403,
+  "body": {
+    "error": {
+      "type": "permission_error",
+      "message": "Model access requires explicit opt in (hosted in China). [REDACTED]"
+    }
+  },
+  "notes": "脱敏样例：无 type=RegionError，仅靠 message 关键词识别。"
+}

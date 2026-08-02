@@ -1,0 +1,12 @@
+{
+  "id": "chatcmpl-2",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "ok"},
+      "finish_reason": "length"
+    }
+  ],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+}

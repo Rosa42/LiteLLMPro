@@ -1,0 +1,144 @@
+# Profiles:
+#   core (default for M0): litellm + redis + quota-worker
+#   full: + postgres + caddy (127.0.0.1:4000)
+#
+# Usage (run from repo root so --env-file resolves):
+#   docker compose --env-file .env -f deploy/docker-compose.yaml --profile core config
+#   docker compose --env-file .env -f deploy/docker-compose.yaml --profile core up -d --build
+#   docker compose --env-file .env -f deploy/docker-compose.yaml --profile full up -d --build
+
+name: local-llm-router
+
+services:
+  litellm:
+    profiles: ["core", "full"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.litellm
+      args:
+        LITELLM_VERSION: ${LITELLM_VERSION:-v1.90.5}
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # Register shared-quota strategy after llm_router is ready (v1.90.5 hook).
+      LITELLM_WORKER_STARTUP_HOOKS: shared_quota_router.bootstrap:register_proxy_startup
+      # Do not inject DATABASE_URL here. For core/M0 leave it unset in .env
+      # so LiteLLM skips Prisma/Postgres. Enable only with profile "full".
+    volumes:
+      - ../config/litellm.yaml:/app/config.yaml:ro
+    command:
+      - --config
+      - /app/config.yaml
+      - --port
+      - "4000"
+      - --host
+      - "0.0.0.0"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+    # Without Caddy (core): bind loopback only on host
+    ports:
+      - "127.0.0.1:4000:4000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=3)\" || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  quota-worker:
+    profiles: ["core", "full"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+      args:
+        LITELLM_VERSION: ${LITELLM_VERSION:-v1.90.5}
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+
+  redis:
+    profiles: ["core", "full"]
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks:
+      - internal
+    # No host port publish — internal only
+
+  postgres:
+    profiles: ["full"]
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-litellm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required for full profile}
+      POSTGRES_DB: ${POSTGRES_DB:-litellm}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - internal
+    # No host port publish
+
+  caddy:
+    profiles: ["full"]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4001:4000"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - litellm
+    networks:
+      - internal
+
+networks:
+  internal:
+
+volumes:
+  redis-data:
+  postgres-data:

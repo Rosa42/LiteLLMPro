@@ -1,0 +1,5 @@
+# Local-only reverse proxy. Do not expose to the public internet.
+:4000 {
+	bind 127.0.0.1
+	reverse_proxy litellm:4000
+}

@@ -1,0 +1,23 @@
+# Logging skeleton. Never log Authorization headers, API keys, or full prompts.
+
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  json:
+    format: "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    formatter: json
+    stream: ext://sys.stdout
+
+root:
+  level: INFO
+  handlers: [console]
+
+# Policy (enforced by application code, not only this file):
+# - Strip Authorization / api_key / token fields before emit
+# - Prefer structured fields: request_id, provider_id, quota_group_id, deployment_id
+# - Do not put secrets or full error bodies into metric labels

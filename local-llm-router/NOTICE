@@ -1,0 +1,27 @@
+Third-party notices
+===================
+
+This repository (local-llm-router / LiteLLMPro) is an integration and extension
+layer that runs on top of LiteLLM Proxy. It does not relicense LiteLLM.
+
+1) LiteLLM (BerriAI)
+-------------------
+- Source: https://github.com/BerriAI/litellm
+- Vendored/submodule path: upstream/litellm
+- License: MIT for the open-source tree (see upstream/litellm/LICENSE)
+- Note: content under upstream/litellm/enterprise/ (if present) is under a
+  separate commercial license (see upstream/litellm/enterprise/LICENSE.md).
+  Do not treat enterprise code as MIT.
+
+When you distribute this project, keep the LiteLLM copyright and MIT notice
+from upstream/litellm/LICENSE.
+
+2) This project
+---------------
+- Plugin code under plugins/, deploy configs, scripts, and docs in this repo
+  are provided under the MIT License in ./LICENSE unless otherwise marked.
+
+3) User secrets
+---------------
+- Never commit .env, API keys, or Coding Plan credentials.
+- Use .env.example and config/plans.example.yaml as templates only.

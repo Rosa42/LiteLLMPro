@@ -1,0 +1,7 @@
+{
+  "model": "pilot",
+  "max_tokens": 128,
+  "messages": [
+    {"role": "user", "content": "hello"}
+  ]
+}
