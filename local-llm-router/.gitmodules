@@ -1,3 +1,0 @@
-[submodule "upstream/litellm"]
-	path = upstream/litellm
-	url = https://github.com/BerriAI/litellm.git

@@ -1,0 +1,3 @@
+[submodule "local-llm-router/upstream/litellm"]
+	path = local-llm-router/upstream/litellm
+	url = https://github.com/BerriAI/litellm.git
