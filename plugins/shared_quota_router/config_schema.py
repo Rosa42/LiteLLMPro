@@ -9,6 +9,8 @@ Rules (summary):
 - Missing / empty public opt-in ⇒ model unavailable on every public endpoint.
 - Unknown protocols, duplicate plan IDs, and Responses opt-in without a Responses
   deployment are configuration errors (fail before LiteLLM starts).
+- **Streaming SoT (P0-SOT):** ``supported_features``是否含 ``streaming`` 为唯一作者侧来源；
+  ``supports_streaming`` 须与 features 一致或由 generator 从 features 派生。
 """
 
 from __future__ import annotations
@@ -31,12 +33,12 @@ from shared_quota_router.models import (
     parse_fidelity_class,
 )
 
-# MVP defaults when a plan declares openai_chat without listing features.
-DEFAULT_CHAT_FEATURES: frozenset[Feature] = frozenset(
-    {Feature.TEXT, Feature.STREAMING, Feature.TOOLS}
-)
+# openai_chat 省略 supported_features 时的缺省（P1-CAP：收窄为仅 TEXT，禁止静默打开 stream/tools）。
+DEFAULT_CHAT_FEATURES: frozenset[Feature] = frozenset({Feature.TEXT})
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# quota_group_id / plan.id 格式（P1-QG-ID）；非法一律拒绝，禁止 ascii_safe 静默改写。
+_QUOTA_GROUP_ID_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 # Reject accidental secret material in config files (values, not env names).
 _SECRETISH_RE = re.compile(
     r"(?i)\b(sk-[a-zA-Z0-9]{10,}|ark-[a-zA-Z0-9]{8,}|Bearer\s+\S+|api[_-]?key\s*[:=]\s*['\"]?[^'\"\s]{8,})"
@@ -68,6 +70,8 @@ class PlanConfig:
     base_url_env: str
     api_key_env: str
     models: list[PlanModelEntry]
+    # 额度组 ID（P1-QG-ID）；省略时等于 plan.id（须已合法）。
+    quota_group_id: str = ""
     upstream_protocol: ApiProtocol | None = None
     supported_features: frozenset[Feature] = field(default_factory=frozenset)
     supports_streaming: bool = False
@@ -90,12 +94,7 @@ class PlanConfig:
         return frozenset()
 
     def resolved_streaming(self, model: PlanModelEntry) -> bool:
-        if model.supports_streaming is not None:
-            return model.supports_streaming
-        features = self.resolved_features(model)
-        if Feature.STREAMING in features:
-            return True
-        return self.supports_streaming
+        return _streaming_from_features(self.resolved_features(model))
 
     def resolved_conversions(self, model: PlanModelEntry) -> tuple[ConversionCapability, ...]:
         if model.conversions is not None:
@@ -148,6 +147,50 @@ def _require_env_name(name: str, *, field_name: str, plan_id: str) -> str:
             f"plan {plan_id!r}: {field_name} should be bare env name, not os.environ/..."
         )
     return value
+
+
+def _require_quota_group_id(value: str, *, context: str) -> str:
+    """校验 quota_group_id / plan.id 格式；非法直接失败（禁止静默改写）。"""
+    qg = (value or "").strip()
+    if not qg:
+        raise ConfigValidationError(f"{context}: quota_group_id is required")
+    if not _QUOTA_GROUP_ID_RE.match(qg):
+        raise ConfigValidationError(
+            f"{context}: quota_group_id={qg!r} must match "
+            f"^[a-z][a-z0-9-]{{1,63}}$ (reject silent rewrite)"
+        )
+    return qg
+
+
+def _streaming_from_features(features: frozenset[Feature]) -> bool:
+    return Feature.STREAMING in features
+
+
+def _validate_streaming_field_consistency(
+    features: frozenset[Feature],
+    supports_streaming: bool | None,
+    *,
+    context: str,
+) -> bool:
+    """P0-SOT: supported_features is sole author SoT; explicit flag must match."""
+    derived = _streaming_from_features(features)
+    if supports_streaming is not None and bool(supports_streaming) != derived:
+        raise ConfigValidationError(
+            f"{context}: supports_streaming={supports_streaming!r} conflicts with "
+            f"supported_features (streaming present => {derived}); "
+            f"supported_features is the sole source of truth for streaming"
+        )
+    return derived
+
+
+def _needs_explicit_features(
+    protocol: ApiProtocol | None,
+    conversions: tuple[ConversionCapability, ...] | None,
+) -> bool:
+    """anthropic_messages 或声明 conversions 时必须显式填写 supported_features（P1-CAP）。"""
+    if protocol is ApiProtocol.ANTHROPIC_MESSAGES:
+        return True
+    return bool(conversions)
 
 
 def _parse_conversion_list(raw: Any, *, context: str) -> tuple[ConversionCapability, ...]:
@@ -245,6 +288,14 @@ def _parse_plan(raw: Mapping[str, Any]) -> PlanConfig:
     if not plan_id:
         raise ConfigValidationError("plan missing id")
     _reject_secrets(plan_id, context=f"plan id {plan_id!r}")
+    # plan.id 自身须合法：既作 deployment 前缀，也可作 quota_group_id 缺省值。
+    try:
+        _require_quota_group_id(plan_id, context=f"plan id {plan_id!r}")
+    except ConfigValidationError as exc:
+        raise ConfigValidationError(
+            f"plan id {plan_id!r}: must match ^[a-z][a-z0-9-]{{1,63}}$ "
+            f"(reject silent rewrite)"
+        ) from exc
 
     base_url_env = _require_env_name(
         str(raw.get("base_url_env") or ""),
@@ -274,15 +325,46 @@ def _parse_plan(raw: Mapping[str, Any]) -> PlanConfig:
     except ValueError as exc:
         raise ConfigValidationError(f"plan {plan_id!r}: {exc}") from exc
 
+    features_specified = "supported_features" in raw
     try:
-        features = parse_feature_set(raw.get("supported_features"))
+        features = (
+            parse_feature_set(raw.get("supported_features"))
+            if features_specified
+            else frozenset()
+        )
     except ValueError as exc:
         raise ConfigValidationError(f"plan {plan_id!r}: {exc}") from exc
 
-    if not features and upstream_protocol is ApiProtocol.OPENAI_CHAT:
+    plan_conversions = _parse_conversion_list(
+        raw.get("conversions"), context=f"plan {plan_id!r}"
+    )
+
+    # P1-CAP：anthropic_messages / conversions 禁止省略 features（防止 DEFAULT 静默打开能力）。
+    if _needs_explicit_features(upstream_protocol, plan_conversions) and not features_specified:
+        raise ConfigValidationError(
+            f"plan {plan_id!r}: supported_features is required when "
+            f"upstream_protocol is anthropic_messages or conversions are declared"
+        )
+    for m in models:
+        model_conversions = m.conversions if m.conversions is not None else ()
+        if _needs_explicit_features(m.upstream_protocol, model_conversions):
+            if m.supported_features is None and not features_specified:
+                raise ConfigValidationError(
+                    f"plan {plan_id!r} model {m.model!r}: supported_features is required "
+                    f"when upstream_protocol is anthropic_messages or conversions are declared"
+                )
+
+    # openai_chat 且未声明 features 时才套 DEFAULT（已收窄为 TEXT）。
+    if not features_specified and upstream_protocol is ApiProtocol.OPENAI_CHAT:
         features = DEFAULT_CHAT_FEATURES
 
-    supports_streaming = bool(raw.get("supports_streaming", Feature.STREAMING in features))
+    explicit_streaming = raw.get("supports_streaming")
+    streaming_present = explicit_streaming is not None
+    supports_streaming = _validate_streaming_field_consistency(
+        features,
+        bool(explicit_streaming) if streaming_present else None,
+        context=f"plan {plan_id!r}",
+    )
     enabled = bool(raw.get("enabled", True))
     display_name = str(raw.get("display_name") or plan_id).strip()
     provider_id = str(raw.get("provider_id") or "unknown").strip()
@@ -291,9 +373,14 @@ def _parse_plan(raw: Mapping[str, Any]) -> PlanConfig:
     except (TypeError, ValueError) as exc:
         raise ConfigValidationError(f"plan {plan_id!r}: priority must be int") from exc
 
-    plan_conversions = _parse_conversion_list(
-        raw.get("conversions"), context=f"plan {plan_id!r}"
-    )
+    # quota_group_id 可选；缺省 = plan.id（已校验格式）。
+    if "quota_group_id" in raw and raw.get("quota_group_id") not in (None, ""):
+        quota_group_id = _require_quota_group_id(
+            str(raw.get("quota_group_id")),
+            context=f"plan {plan_id!r}",
+        )
+    else:
+        quota_group_id = plan_id
 
     return PlanConfig(
         id=plan_id,
@@ -303,6 +390,7 @@ def _parse_plan(raw: Mapping[str, Any]) -> PlanConfig:
         base_url_env=base_url_env,
         api_key_env=api_key_env,
         models=models,
+        quota_group_id=quota_group_id,
         upstream_protocol=upstream_protocol,
         supported_features=features,
         supports_streaming=supports_streaming,
@@ -479,6 +567,37 @@ def validate_plans_document(doc: PlansDocument) -> None:
     if len(ids) != len(set(ids)):
         raise ConfigValidationError("duplicate plan id")
 
+    # P1-QG-ID：同 api_key_env 的多个 enabled plan 必须共享相同 quota_group_id。
+    key_to_qg: dict[str, str] = {}
+    for plan in doc.plans:
+        if not plan.enabled:
+            continue
+        key = plan.api_key_env.strip()
+        prev = key_to_qg.get(key)
+        if prev is None:
+            key_to_qg[key] = plan.quota_group_id
+        elif prev != plan.quota_group_id:
+            raise ConfigValidationError(
+                f"api_key_env {key!r} is shared by enabled plans with conflicting "
+                f"quota_group_id: {prev!r} vs {plan.quota_group_id!r}"
+            )
+
+    # 全局 deployment_id = {plan.id}-{model} 不得重复。
+    seen_deps: set[str] = set()
+    for plan in doc.plans:
+        for m in plan.models:
+            dep_id = re.sub(r"[^a-zA-Z0-9._-]", "-", f"{plan.id}-{m.model}")
+            if dep_id in seen_deps:
+                raise ConfigValidationError(f"duplicate deployment_id {dep_id!r}")
+            seen_deps.add(dep_id)
+            feats = plan.resolved_features(m)
+            if m.supports_streaming is not None:
+                _validate_streaming_field_consistency(
+                    feats,
+                    m.supports_streaming,
+                    context=f"plan {plan.id!r} model {m.model!r}",
+                )
+
     available = doc.enabled_deployments_protocols()
 
     for mg, lm in doc.logical_models.items():
@@ -502,13 +621,24 @@ def validate_plans_document(doc: PlansDocument) -> None:
 
         for proto in lm.public_protocols:
             if proto is ApiProtocol.OPENAI_RESPONSES:
-                if not _has_direct_upstream(doc, mg, ApiProtocol.OPENAI_RESPONSES):
-                    raise ConfigValidationError(
-                        f"logical model {mg!r}: Responses public opt-in requires at least "
-                        f"one enabled deployment with upstream_protocol=openai_responses"
+                if _has_direct_upstream(doc, mg, ApiProtocol.OPENAI_RESPONSES):
+                    continue
+                # Policy A: Responses public via Chat native bridge
+                if (
+                    lm.allow_conversion
+                    and (
+                        ApiProtocol.OPENAI_RESPONSES,
+                        ApiProtocol.OPENAI_CHAT,
                     )
-                continue
-
+                    in lm.allowed_conversions
+                    and _has_direct_upstream(doc, mg, ApiProtocol.OPENAI_CHAT)
+                ):
+                    continue
+                raise ConfigValidationError(
+                    f"logical model {mg!r}: Responses public opt-in requires a direct "
+                    f"openai_responses deployment OR Chat upstream + "
+                    f"allow_conversion openai_responses→openai_chat (Policy A)"
+                )
             if _has_direct_upstream(doc, mg, proto):
                 continue
             if _has_conversion_route(doc, lm, proto):

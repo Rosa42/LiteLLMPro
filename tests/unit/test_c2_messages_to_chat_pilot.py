@@ -52,13 +52,37 @@ def test_conversion_routing_requires_gateway_and(
 
     monkeypatch.setenv("PROTOCOL_AWARE_GATEWAY_ENABLED", "true")
     clear_flag_cache()
-    # 仍缺 proven path（native / g0a）
+    # 仍缺 proven path（P0-G0A：仅 native；g0a 不计入）
+    try:
+        import litellm
+
+        monkeypatch.setattr(
+            litellm, "use_chat_completions_url_for_anthropic_messages", False
+        )
+    except ImportError:
+        monkeypatch.delenv(
+            "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", raising=False
+        )
+    clear_flag_cache()
     assert is_conversion_routing_active() is False
 
     set_g0a_messages_mount_ready(True)
     clear_flag_cache()
-    assert is_conversion_routing_active() is True
+    assert is_conversion_routing_active() is False
     set_g0a_messages_mount_ready(False)
+
+    try:
+        import litellm
+
+        monkeypatch.setattr(
+            litellm, "use_chat_completions_url_for_anthropic_messages", True
+        )
+    except ImportError:
+        monkeypatch.setenv(
+            "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", "true"
+        )
+    clear_flag_cache()
+    assert is_conversion_routing_active() is True
 
 
 def test_dispatch_blocked_when_gateway_off_conversion_on(
@@ -181,22 +205,25 @@ def test_dispatch_convert_request_requires_flag() -> None:
         )
 
 
-def test_strategy_convert_rewrites_kwargs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_strategy_convert_uses_native_without_g0b_rewrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0-G0A：convert 走 LITELLM_NATIVE；不做项目 G0-B kwargs 改写。"""
     monkeypatch.setenv("PROTOCOL_CONVERSION_ENABLED", "true")
     monkeypatch.setenv("PROTOCOL_AWARE_GATEWAY_ENABLED", "true")
-    # G0-B rewrite 仅在非 native、且 path ready（此处用 g0a mount 模拟）时执行
     from shared_quota_router.feature_flags import set_g0a_messages_mount_ready
 
-    set_g0a_messages_mount_ready(True)
-    clear_flag_cache()
+    set_g0a_messages_mount_ready(False)
     try:
         import litellm
 
         monkeypatch.setattr(
-            litellm, "use_chat_completions_url_for_anthropic_messages", False
+            litellm, "use_chat_completions_url_for_anthropic_messages", True
         )
     except ImportError:
-        pass
+        monkeypatch.setenv(
+            "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", "true"
+        )
     clear_flag_cache()
 
     from shared_quota_router.conversion.dispatch import (
@@ -325,5 +352,6 @@ def test_strategy_convert_rewrites_kwargs(monkeypatch: pytest.MonkeyPatch) -> No
         kwargs["litellm_metadata"][CONVERSION_DIR_META_KEY]
         == "anthropic_messages>openai_chat"
     )
-    assert kwargs["messages"][0] == {"role": "system", "content": "sys"}
-    assert "system" not in kwargs
+    # native：保留 Anthropic system，不做 G0-B Chat 改写
+    assert kwargs.get("system") == "sys"
+    assert kwargs["messages"] == [{"role": "user", "content": "hi"}]

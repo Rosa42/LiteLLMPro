@@ -57,14 +57,16 @@ def test_conversion_routing_requires_path_ready(monkeypatch: pytest.MonkeyPatch)
     assert is_conversion_routing_active() is True
 
 
-def test_conversion_routing_allows_g0a_mount_without_native(
+def test_conversion_routing_ignores_g0a_mount_without_native(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """P0-G0A：g0a_mount 不计入 Messages→Chat path ready；仅 native 可激活。"""
     monkeypatch.setenv("PROTOCOL_AWARE_GATEWAY_ENABLED", "true")
     monkeypatch.setenv("PROTOCOL_CONVERSION_ENABLED", "true")
     set_g0a_messages_mount_ready(True)
     clear_flag_cache()
-    assert is_conversion_routing_active() is True
+    assert is_native_messages_chat_path_active() is False
+    assert is_conversion_routing_active() is False
 
 
 class Mem:

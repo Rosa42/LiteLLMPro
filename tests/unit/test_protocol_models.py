@@ -231,3 +231,20 @@ def test_supports_streaming_inferred_from_features_when_flag_absent() -> None:
         }
     )
     assert d.supports_streaming is True
+    assert d.supports_feature(Feature.STREAMING) is True
+
+
+def test_supports_feature_streaming_ignores_compat_flag_without_feature() -> None:
+    """P0-SOT: runtime only checks supported_features, not supports_streaming OR."""
+    d = Deployment(
+        deployment_id="d1",
+        model_group="m",
+        upstream_model="openai/m",
+        provider_id="p",
+        quota_group_id="q",
+        upstream_protocol=ApiProtocol.OPENAI_CHAT,
+        supported_features=frozenset({Feature.TEXT}),
+        supports_streaming=True,
+    )
+    assert d.supports_streaming is True
+    assert d.supports_feature(Feature.STREAMING) is False

@@ -1,0 +1,10 @@
+{
+  "http_status": 400,
+  "body": {
+    "error": {
+      "type": "invalid_request_error",
+      "message": "Upstream request failed: invalid_request for chat-only model on /v1/messages. [REDACTED]"
+    }
+  },
+  "notes": "脱敏样例：Messages 打 Chat-only → BAD_REQUEST，不熔断 qg。"
+}

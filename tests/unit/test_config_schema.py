@@ -8,12 +8,13 @@ import pytest
 import yaml
 
 from shared_quota_router.config_schema import (
+    DEFAULT_CHAT_FEATURES,
     ConfigValidationError,
     load_plans_dict,
     load_plans_file,
     public_protocols_for,
 )
-from shared_quota_router.models import ApiProtocol
+from shared_quota_router.models import ApiProtocol, Feature
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -35,7 +36,187 @@ def _base_plan(**overrides):
     return p
 
 
-def test_opencode_and_volc_validate_as_openai_chat() -> None:
+def test_default_chat_features_text_only() -> None:
+    """P1-CAP：DEFAULT_CHAT_FEATURES 收窄为仅 TEXT，禁止静默打开 stream/tools。"""
+    assert DEFAULT_CHAT_FEATURES == frozenset({Feature.TEXT})
+    assert Feature.STREAMING not in DEFAULT_CHAT_FEATURES
+    assert Feature.TOOLS not in DEFAULT_CHAT_FEATURES
+
+
+def test_openai_chat_omitted_features_uses_text_default() -> None:
+    plan = _base_plan()
+    del plan["supported_features"]
+    del plan["supports_streaming"]
+    doc = load_plans_dict({"plans": [plan], "logical_models": {}})
+    assert doc.plans[0].supported_features == frozenset({Feature.TEXT})
+    assert doc.plans[0].supports_streaming is False
+
+
+def test_quota_group_id_defaults_to_plan_id() -> None:
+    doc = load_plans_dict({"plans": [_base_plan()], "logical_models": {}})
+    assert doc.plans[0].quota_group_id == "opencode-a"
+
+
+def test_quota_group_id_explicit_accepted() -> None:
+    doc = load_plans_dict(
+        {
+            "plans": [_base_plan(id="opencode-a-msg", quota_group_id="opencode-a")],
+            "logical_models": {},
+        }
+    )
+    assert doc.plans[0].id == "opencode-a-msg"
+    assert doc.plans[0].quota_group_id == "opencode-a"
+
+
+def test_quota_group_id_invalid_format_rejected() -> None:
+    with pytest.raises(ConfigValidationError, match="quota_group_id"):
+        load_plans_dict(
+            {
+                "plans": [_base_plan(quota_group_id="OpenCode_A")],
+                "logical_models": {},
+            }
+        )
+
+
+def test_plan_id_invalid_format_rejected() -> None:
+    with pytest.raises(ConfigValidationError, match="plan id"):
+        load_plans_dict(
+            {
+                "plans": [_base_plan(id="OpenCode_A")],
+                "logical_models": {},
+            }
+        )
+
+
+def test_same_api_key_env_requires_same_quota_group_id() -> None:
+    data = {
+        "plans": [
+            _base_plan(id="opencode-a-msg", quota_group_id="opencode-a"),
+            _base_plan(
+                id="opencode-a-chat",
+                quota_group_id="opencode-b",
+                models=["kimi-k3"],
+            ),
+        ],
+        "logical_models": {},
+    }
+    with pytest.raises(ConfigValidationError, match="quota_group_id"):
+        load_plans_dict(data)
+
+
+def test_same_api_key_env_same_quota_group_id_ok() -> None:
+    data = {
+        "plans": [
+            _base_plan(id="opencode-a-msg", quota_group_id="opencode-a", models=["glm-5.2"]),
+            _base_plan(
+                id="opencode-a-chat",
+                quota_group_id="opencode-a",
+                models=["kimi-k3"],
+            ),
+        ],
+        "logical_models": {},
+    }
+    doc = load_plans_dict(data)
+    assert {p.quota_group_id for p in doc.plans} == {"opencode-a"}
+
+
+def test_disabled_plan_skips_same_key_quota_group_check() -> None:
+    data = {
+        "plans": [
+            _base_plan(id="opencode-a-msg", quota_group_id="opencode-a"),
+            _base_plan(
+                id="opencode-a-legacy",
+                enabled=False,
+                quota_group_id="other-qg",
+                models=["legacy-model"],
+            ),
+        ],
+        "logical_models": {},
+    }
+    doc = load_plans_dict(data)
+    assert doc.plans[0].quota_group_id == "opencode-a"
+    assert doc.plans[1].quota_group_id == "other-qg"
+
+
+def test_anthropic_plan_requires_supported_features() -> None:
+    plan = _base_plan(upstream_protocol="anthropic_messages")
+    del plan["supported_features"]
+    with pytest.raises(ConfigValidationError, match="supported_features"):
+        load_plans_dict({"plans": [plan], "logical_models": {}})
+
+
+def test_conversion_plan_requires_supported_features() -> None:
+    plan = _base_plan(
+        models=["claude-pilot"],
+        conversions=[
+            {
+                "from": "anthropic_messages",
+                "to": "openai_chat",
+                "fidelity": "equivalent",
+                "streaming": False,
+            }
+        ],
+    )
+    del plan["supported_features"]
+    with pytest.raises(ConfigValidationError, match="supported_features"):
+        load_plans_dict(
+            {
+                "plans": [plan],
+                "logical_models": {
+                    "claude-pilot": {
+                        "public_protocols": ["openai_chat"],
+                        "allow_conversion": True,
+                        "conversion_policy": {
+                            "allowed": [
+                                {"from": "anthropic_messages", "to": "openai_chat"}
+                            ]
+                        },
+                    }
+                },
+            }
+        )
+
+
+def test_opencode_and_volc_validate_as_anthropic_messages() -> None:
+    """当前合法语义：OpenCode/Volc 可为 anthropic_messages（不强制 Chat-only）。"""
+    data = {
+        "plans": [
+            _base_plan(
+                id="opencode-a",
+                upstream_protocol="anthropic_messages",
+                supported_features=["text"],
+                supports_streaming=False,
+                models=["kimi-k3", "glm-5.2"],
+            ),
+            {
+                "id": "volc-c",
+                "display_name": "Volc C",
+                "provider_id": "volcengine",
+                "priority": 20,
+                "base_url_env": "VOLC_CODING_ANTHROPIC_BASE_URL",
+                "api_key_env": "VOLC_CODING_KEY_C",
+                "upstream_protocol": "anthropic_messages",
+                "supported_features": ["text"],
+                "supports_streaming": False,
+                "models": ["glm-5.2"],
+            },
+        ],
+        "logical_models": {
+            "kimi-k3": {"public_protocols": ["anthropic_messages"]},
+            "glm-5.2": {"public_protocols": ["anthropic_messages"]},
+        },
+    }
+    doc = load_plans_dict(data)
+    assert doc.plans[0].upstream_protocol is ApiProtocol.ANTHROPIC_MESSAGES
+    assert doc.plans[1].upstream_protocol is ApiProtocol.ANTHROPIC_MESSAGES
+    assert all(
+        m.model and doc.plans[0].resolved_protocol(m) is ApiProtocol.ANTHROPIC_MESSAGES
+        for m in doc.plans[0].models
+    )
+
+
+def test_openai_chat_plans_still_legal_for_convert_leg() -> None:
+    """Chat upstream 仍合法（convert 腿）；不再把公网语义钉死为 Chat-only。"""
     data = {
         "plans": [
             _base_plan(),
@@ -61,10 +242,7 @@ def test_opencode_and_volc_validate_as_openai_chat() -> None:
     doc = load_plans_dict(data)
     assert doc.plans[0].upstream_protocol is ApiProtocol.OPENAI_CHAT
     assert doc.plans[1].upstream_protocol is ApiProtocol.OPENAI_CHAT
-    assert all(
-        m.model and doc.plans[0].resolved_protocol(m) is ApiProtocol.OPENAI_CHAT
-        for m in doc.plans[0].models
-    )
+
 
 
 def test_newapi_disabled_without_protocol() -> None:
@@ -178,21 +356,68 @@ def test_repo_plans_yaml_loads() -> None:
     if not path.is_file():
         pytest.skip("config/plans.yaml missing")
     doc = load_plans_file(path)
-    opencode = next(p for p in doc.plans if p.id == "opencode-a")
-    volc = next(p for p in doc.plans if p.id == "volc-c")
-    assert opencode.upstream_protocol is ApiProtocol.OPENAI_CHAT
-    assert volc.upstream_protocol is ApiProtocol.OPENAI_CHAT
+    opencode = next(p for p in doc.plans if p.id == "opencode-a-msg")
+    volc = next(p for p in doc.plans if p.id == "volc-c-msg")
+    assert opencode.upstream_protocol is ApiProtocol.ANTHROPIC_MESSAGES
+    assert volc.upstream_protocol is ApiProtocol.ANTHROPIC_MESSAGES
+    assert opencode.quota_group_id == "opencode-a"
+    assert opencode.supported_features  # anthropic 须显式 features
+    chat = next(p for p in doc.plans if p.id == "opencode-a-chat")
+    assert chat.upstream_protocol is ApiProtocol.OPENAI_CHAT
+    chat_model_names = {m.model for m in chat.models}
+    assert "deepseek-v4-flash" in chat_model_names
+    assert "kimi-k3" in chat_model_names
     newapi = next(p for p in doc.plans if p.id == "newapi-a")
-    assert newapi.upstream_protocol is None
-    assert newapi.enabled is False
-    assert public_protocols_for(doc, "kimi-k3") == frozenset({ApiProtocol.OPENAI_CHAT})
-    assert public_protocols_for(doc, "claude-opus-4-8") == frozenset()
+    assert newapi.upstream_protocol is ApiProtocol.ANTHROPIC_MESSAGES
+    assert newapi.enabled is True
+    assert public_protocols_for(doc, "kimi-k3") == frozenset(
+        {ApiProtocol.OPENAI_CHAT, ApiProtocol.ANTHROPIC_MESSAGES}
+    )
+    assert public_protocols_for(doc, "deepseek-v4-flash") == frozenset(
+        {ApiProtocol.OPENAI_CHAT, ApiProtocol.ANTHROPIC_MESSAGES}
+    )
+    assert public_protocols_for(doc, "claude-opus-4-8") == frozenset(
+        {ApiProtocol.ANTHROPIC_MESSAGES}
+    )
 
 
 def test_repo_plans_example_loads() -> None:
     path = _ROOT / "config" / "plans.example.yaml"
     doc = load_plans_file(path)
     assert any(p.upstream_protocol is ApiProtocol.OPENAI_CHAT for p in doc.plans)
+
+
+def test_streaming_flag_without_feature_rejected() -> None:
+    plan = _base_plan(
+        supported_features=["text"],
+        supports_streaming=True,
+    )
+    with pytest.raises(ConfigValidationError, match="sole source of truth"):
+        load_plans_dict({"plans": [plan], "logical_models": {}})
+
+
+def test_streaming_feature_without_flag_derives_false_compat_field() -> None:
+    plan = _base_plan()
+    del plan["supports_streaming"]
+    doc = load_plans_dict({"plans": [plan], "logical_models": {}})
+    assert Feature.STREAMING in doc.plans[0].supported_features
+    assert doc.plans[0].supports_streaming is True
+
+
+def test_model_level_streaming_flag_must_match_features() -> None:
+    plan = _base_plan(
+        supported_features=["text"],
+        supports_streaming=False,
+        models=[
+            {
+                "model": "kimi-k3",
+                "supported_features": ["text"],
+                "supports_streaming": True,
+            }
+        ],
+    )
+    with pytest.raises(ConfigValidationError, match="sole source of truth"):
+        load_plans_dict({"plans": [plan], "logical_models": {}})
 
 
 def test_reject_conversion_while_allow_conversion_false() -> None:

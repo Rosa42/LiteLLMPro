@@ -10,14 +10,17 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from shared_quota_router.classifiers.base import (
+    BaseClassifier,
     FailureClassification,
     FailureKind,
+    FailureScope,
     UpstreamError,
 )
 from shared_quota_router.classifiers.generic_openai import (
     GenericOpenAIClassifier,
     is_high_confidence_quota_exhaust,
 )
+from shared_quota_router.classifiers.opencode_go import OpenCodeGoClassifier
 from shared_quota_router.lease import LeaseManager
 from shared_quota_router.metrics import inc, set_gauge
 from shared_quota_router.models import (
@@ -31,7 +34,10 @@ from shared_quota_router.protocol_context import (
     get_metadata_value,
     inject_protocol_into_data,
 )
-from shared_quota_router.protocol_errors import ProtocolAwareRoutingError
+from shared_quota_router.protocol_errors import (
+    ProtocolAwareRoutingError,
+    ProtocolRoutingReason,
+)
 from shared_quota_router.protocol_gates import enforce_pre_call_gates
 from shared_quota_router.registry import DeploymentRegistry
 from shared_quota_router.state_store import StateStore, StateStoreError
@@ -45,6 +51,12 @@ logger = logging.getLogger(__name__)
 
 AlertHook = Callable[[str, dict[str, Any]], None]
 
+# provider_id → 专用分类器；未命中则 Generic
+_PROVIDER_CLASSIFIERS: dict[str, BaseClassifier] = {
+    "opencode-go": OpenCodeGoClassifier(),
+}
+_DEFAULT_CLASSIFIER = GenericOpenAIClassifier()
+
 try:
     from litellm.integrations.custom_logger import CustomLogger as _CustomLoggerBase
 except Exception:  # pragma: no cover - unit tests without litellm
@@ -54,6 +66,13 @@ except Exception:  # pragma: no cover - unit tests without litellm
 
 def _default_alert(event: str, payload: dict[str, Any]) -> None:
     logger.error("ALERT %s %s", event, payload)
+
+
+def classifier_for_provider(provider_id: str | None) -> BaseClassifier:
+    """按 provider_id 分发；opencode-go → OpenCodeGoClassifier，否则 Generic。"""
+    if provider_id and provider_id in _PROVIDER_CLASSIFIERS:
+        return _PROVIDER_CLASSIFIERS[provider_id]
+    return _DEFAULT_CLASSIFIER
 
 
 class SharedQuotaCallback(_CustomLoggerBase):
@@ -75,7 +94,8 @@ class SharedQuotaCallback(_CustomLoggerBase):
     ) -> None:
         self.store = store
         self.lease_manager = lease_manager
-        self.classifier = classifier or GenericOpenAIClassifier()
+        # 显式注入时作为非 provider 专用路径的默认；opencode-go 仍走分发表
+        self.classifier = classifier or _DEFAULT_CLASSIFIER
         self.alert_hook = alert_hook or _default_alert
         self.short_cooldown_seconds = short_cooldown_seconds
         self.reqctx_ttl_seconds = reqctx_ttl_seconds
@@ -134,17 +154,35 @@ class SharedQuotaCallback(_CustomLoggerBase):
             return data
         try:
             inject_protocol_into_data(data, call_type=call_type, overwrite=False)
+            # P1-A5：LiteLLM 可能在 startup hook 之后覆盖 ProxyException handler；
+            # 每次预调用廉价检查并在被覆盖时重挂（内部幂等）。
+            try:
+                from shared_quota_router.anthropic_wire import mount_anthropic_wire_guard
+
+                mount_anthropic_wire_guard()
+            except Exception:  # noqa: BLE001
+                pass
             registry = self._resolve_registry()
             enforce_pre_call_gates(data, call_type=call_type, registry=registry)
         except ProtocolAwareRoutingError:
             raise
         except Exception as exc:  # noqa: BLE001
-            logger.warning("pre_call protocol gate failed: %s", exc)
+            # Fail-closed：未知错误不得放行（Responses / protocol gates）
+            logger.error("pre_call protocol gate failed closed: %s", exc)
+            raise ProtocolAwareRoutingError(
+                "pre-call protocol gate failed",
+                reason=ProtocolRoutingReason.CONFIGURATION_INVALID,
+                protocol=None,
+                details={"cause": type(exc).__name__},
+            ) from exc
         return data
 
     async def async_log_success_event(
         self, kwargs: dict, response_obj: Any, start_time: Any, end_time: Any
     ) -> None:
+        # Streaming: on_success runs from ManagedStream on_stream_complete.
+        if self._request_is_streaming(kwargs) and self._stream_lifecycle_managed(kwargs):
+            return
         self.on_success(kwargs)
 
     async def async_log_failure_event(
@@ -167,16 +205,20 @@ class SharedQuotaCallback(_CustomLoggerBase):
     ) -> Any:
         """Quota accounting + optional C2 response conversion (G0-B mount)."""
         if isinstance(data, dict):
-            try:
-                self.on_success(data)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("post_call_success on_success failed: %s", exc)
+            is_stream = self._request_is_streaming(data)
+            if not is_stream:
+                try:
+                    self.on_success(data)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("post_call_success on_success failed: %s", exc)
             try:
                 response = self._maybe_convert_success_response(data, response)
             except ProtocolAwareRoutingError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("post_call conversion failed: %s", exc)
+            if is_stream:
+                response = self._wrap_streaming_response(data, response)
         return response
 
     def _maybe_convert_success_response(self, data: dict[str, Any], response: Any) -> Any:
@@ -189,11 +231,20 @@ class SharedQuotaCallback(_CustomLoggerBase):
         from shared_quota_router.feature_flags import (
             is_native_messages_chat_path_active,
         )
+        from shared_quota_router.models import ApiProtocol, TransformOwner
         from shared_quota_router.protocol_context import get_metadata_value
 
-        # G0-Native：由 LiteLLM 原生 adapter 返回 Anthropic 形态，跳过项目 G0-B reshape
-        if is_native_messages_chat_path_active():
+        owner = get_metadata_value(data, "shared_quota_transform_owner")
+        # 仅跳过「Messages 公网 + LiteLLM native / Messages native switch」下的项目 G0-B reshape
+        if owner == TransformOwner.LITELLM_NATIVE.value:
             return response
+        if is_native_messages_chat_path_active():
+            # Legacy: Messages→Chat native switch without transform_owner meta yet
+            pub = get_metadata_value(data, "protocol")
+            if pub in (None, ApiProtocol.ANTHROPIC_MESSAGES.value, "anthropic_messages"):
+                mode = get_metadata_value(data, ROUTE_MODE_META_KEY)
+                if mode == "convert":
+                    return response
 
         mode = get_metadata_value(data, ROUTE_MODE_META_KEY)
         if mode != "convert":
@@ -327,6 +378,109 @@ class SharedQuotaCallback(_CustomLoggerBase):
                 ctx.request_id,
             )
 
+    def _request_is_streaming(self, data: dict[str, Any]) -> bool:
+        if data.get("stream") in (True, 1, "true", "True"):
+            return True
+        opt = data.get("optional_params")
+        if isinstance(opt, dict) and opt.get("stream") in (True, 1, "true", "True"):
+            return True
+        return False
+
+    def _stream_lifecycle_managed(self, data: dict[str, Any]) -> bool:
+        return bool(get_metadata_value(data, "shared_quota_stream_managed"))
+
+    def _wrap_streaming_response(self, data: dict[str, Any], response: Any) -> Any:
+        from shared_quota_router.stream_lifecycle import (
+            ManagedStream,
+            StreamLifecycleConfig,
+            StreamLifecycleContext,
+            is_async_iterator,
+            wrap_async_stream,
+        )
+        from shared_quota_router.stream_wire import StreamWireProtocol
+
+        if isinstance(response, ManagedStream):
+            return response
+        if not is_async_iterator(response):
+            return response
+        meta = self._extract_deployment_meta(data)
+        qg = meta.get("quota_group_id") or ""
+        request_id = str(data.get("litellm_call_id") or meta.get("request_id") or "unknown")
+        timeout_raw = data.get("timeout") or data.get("request_timeout") or 300
+        try:
+            timeout = float(timeout_raw)
+        except (TypeError, ValueError):
+            timeout = 300.0
+
+        md = data.setdefault("metadata", {})
+        if isinstance(md, dict):
+            md["shared_quota_stream_managed"] = True
+
+        ctx = StreamLifecycleContext(
+            quota_group_id=qg,
+            request_id=request_id,
+            lease_manager=self.lease_manager,
+            config=StreamLifecycleConfig(request_timeout_seconds=timeout),
+            on_first_byte=lambda: self.mark_first_byte(data),
+            on_stream_complete=lambda: self.on_success(data),
+            wire_protocol=StreamWireProtocol.from_wire(
+                get_metadata_value(data, "protocol")
+            ),
+        )
+        return wrap_async_stream(response, ctx)
+
+    async def async_post_call_streaming_iterator_hook(
+        self,
+        response: Any,
+        user_api_key_dict: Any = None,
+        request_data: dict[str, Any] | None = None,
+        **_extra: Any,
+    ):
+        """Wrap proxy streaming iterator with ManagedStream (B2-04 / C1-05).
+
+        LiteLLM returns streaming responses before ``post_call_success_hook``,
+        so lifecycle must attach here. ``finally`` + ``aclose`` mirrors LiteLLM's
+        ``_finalize_streaming_generator_cleanup`` on client disconnect.
+        """
+        data = request_data if isinstance(request_data, dict) else {}
+        wrapped = self._wrap_streaming_response(data, response)
+        if wrapped is response:
+            async for chunk in response:
+                yield chunk
+            return
+        try:
+            async for chunk in wrapped:
+                yield chunk
+        finally:
+            try:
+                await wrapped.aclose()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("streaming iterator hook aclose failed: %s", exc)
+
+    def release_stream_lease_if_active(self, data: dict[str, Any]) -> None:
+        """Release inflight lease on stream abort without success accounting."""
+        if data.get("_sq_stream_lease_released"):
+            return
+        meta = self._extract_deployment_meta(data)
+        request_id = str(data.get("litellm_call_id") or meta.get("request_id") or "")
+        qg = meta.get("quota_group_id")
+        if not request_id or not qg or self.lease_manager is None:
+            return
+        try:
+            remaining = self.lease_manager.release(
+                quota_group_id=qg, request_id=request_id
+            )
+        except StateStoreError as exc:
+            logger.warning("stream abort lease release failed: %s", exc)
+            return
+        data["_sq_stream_lease_released"] = True
+        logger.info(
+            "stream lease released on abort request_id=%s qg=%s remaining=%s",
+            request_id,
+            qg,
+            remaining,
+        )
+
     def should_allow_retry(self, kwargs: dict[str, Any]) -> bool:
         """Gate for cross-deployment retry (strategy also enforces via Redis)."""
         # M2-04: deterministic protocol/capability errors never retry across deployments
@@ -342,6 +496,7 @@ class SharedQuotaCallback(_CustomLoggerBase):
         return True
 
     def on_success(self, kwargs: dict[str, Any]) -> None:
+        kwargs["_sq_stream_lease_released"] = True
         meta = self._extract_deployment_meta(kwargs)
         request_id = str(kwargs.get("litellm_call_id") or meta.get("request_id") or "unknown")
         qg = meta.get("quota_group_id")
@@ -518,6 +673,35 @@ class SharedQuotaCallback(_CustomLoggerBase):
             # Request-scoped: do not melt account
             return
 
+        # P0-CLF：RegionError → DEPLOYMENT_ERROR + region_blocked → 仅 deployment cooldown，禁止 qg DISABLED
+        if (
+            c.kind == FailureKind.DEPLOYMENT_ERROR
+            and c.scope == FailureScope.DEPLOYMENT.value
+            and c.normalized_message == "region_blocked"
+            and c.confidence >= 0.9
+        ):
+            if deployment_id:
+                until = now + timedelta(
+                    seconds=c.retry_after_seconds or self.short_cooldown_seconds
+                )
+                ttl = c.retry_after_seconds or self.short_cooldown_seconds
+                self.store.put_deployment_state(
+                    DeploymentRuntimeState(
+                        deployment_id=deployment_id,
+                        is_in_cooldown=True,
+                        cooldown_until=until,
+                        last_failure_at=now,
+                    ),
+                    ttl_seconds=ttl,
+                )
+                self.store.put_route_cooldown(
+                    deployment_id,
+                    "direct",
+                    cooldown_until=until,
+                    ttl_seconds=ttl,
+                )
+            return
+
         if c.kind == FailureKind.SHARED_QUOTA_EXHAUSTED and is_high_confidence_quota_exhaust(c):
             if not quota_group_id:
                 return
@@ -666,14 +850,20 @@ class SharedQuotaCallback(_CustomLoggerBase):
         # litellm sometimes puts status in kwargs
         status = status or kwargs.get("response_status_code")
 
+        provider_id = self._extract_deployment_meta(kwargs).get("provider_id")
         error = UpstreamError(
             http_status=int(status) if status is not None else None,
             body=body,
             headers=headers,
             message=message,
-            provider_id=(self._extract_deployment_meta(kwargs).get("provider_id")),
+            provider_id=provider_id,
         )
-        return self.classifier.classify(error)
+        # provider 分发：opencode-go → OpenCodeGoClassifier，否则 Generic（或注入实例）
+        if provider_id == "opencode-go":
+            clf: BaseClassifier = _PROVIDER_CLASSIFIERS["opencode-go"]
+        else:
+            clf = self.classifier
+        return clf.classify(error)
 
     def _extract_deployment_meta(self, kwargs: dict[str, Any]) -> dict[str, str]:
         """Best-effort extraction of deployment_id / quota_group_id from litellm kwargs."""

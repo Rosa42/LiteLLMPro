@@ -52,6 +52,13 @@ return {1, tostring(inflight)}
 _RELEASE_LUA = """
 local inflight_key = KEYS[1]
 local lease_key = KEYS[2]
+local request_id = ARGV[1]
+
+local current = redis.call('GET', lease_key)
+if not current or current ~= request_id then
+  return tonumber(redis.call('GET', inflight_key) or '0')
+end
+
 redis.call('DEL', lease_key)
 local inflight = tonumber(redis.call('GET', inflight_key) or '0')
 if inflight > 0 then
@@ -62,6 +69,22 @@ if inflight < 0 then
   inflight = 0
 end
 return inflight
+"""
+
+_RENEW_LUA = """
+local inflight_key = KEYS[1]
+local lease_key = KEYS[2]
+local request_id = ARGV[1]
+local ttl = tonumber(ARGV[2])
+
+local current = redis.call('GET', lease_key)
+if not current or current ~= request_id then
+  return 0
+end
+
+redis.call('EXPIRE', lease_key, ttl)
+redis.call('EXPIRE', inflight_key, ttl)
+return 1
 """
 
 
@@ -112,10 +135,30 @@ class LeaseManager:
         inflight_key = self._k(INFLIGHT_KEY, quota_group_id=quota_group_id)
         lease_key = self._k(KEY_LEASE, quota_group_id=quota_group_id, request_id=request_id)
         try:
-            result = self._r.eval(_RELEASE_LUA, 2, inflight_key, lease_key)
+            result = self._r.eval(
+                _RELEASE_LUA, 2, inflight_key, lease_key, request_id
+            )
         except Exception as exc:  # noqa: BLE001
             raise StateStoreError(f"lease release failed: {exc}") from exc
         return int(result or 0)
+
+    def renew(
+        self,
+        *,
+        quota_group_id: str,
+        request_id: str,
+        ttl_seconds: int,
+    ) -> bool:
+        """R1: extend lease + inflight TTL while stream is active."""
+        inflight_key = self._k(INFLIGHT_KEY, quota_group_id=quota_group_id)
+        lease_key = self._k(KEY_LEASE, quota_group_id=quota_group_id, request_id=request_id)
+        try:
+            result = self._r.eval(
+                _RENEW_LUA, 2, inflight_key, lease_key, request_id, ttl_seconds
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise StateStoreError(f"lease renew failed: {exc}") from exc
+        return int(result or 0) == 1
 
     def get_inflight(self, quota_group_id: str) -> int:
         key = self._k(INFLIGHT_KEY, quota_group_id=quota_group_id)

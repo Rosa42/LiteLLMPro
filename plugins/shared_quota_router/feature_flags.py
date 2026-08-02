@@ -40,20 +40,24 @@ def is_protocol_conversion_enabled() -> bool:
 
 
 def is_native_messages_chat_path_active() -> bool:
-    """LiteLLM Messages→Chat URL switch (G0-Native).
+    """LiteLLM Messages→Chat URL switch（G0-Native；P1-SOT）。
 
-    Prefer live ``litellm.use_chat_completions_url_for_anthropic_messages``
-    (proxy yaml may set it after import). Also honor env for early/tests.
+    1. 若 litellm 模块属性已加载：以 bool(attr) 为准；False 时禁止再 OR/回退 env。
+    2. 仅属性缺失（单测 / 未启动 proxy）时，才严格解析 env
+       （仅 1/true/yes/on 为真；字符串 false 为假，禁止 Python bool("false")）。
     """
     try:
         import litellm
-
-        if bool(
-            getattr(litellm, "use_chat_completions_url_for_anthropic_messages", False)
-        ):
-            return True
     except ImportError:
-        pass
+        return _env_bool(
+            "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", default=False
+        )
+
+    # 属性已存在（含 YAML setattr / 模块默认值）→ YAML/attr 优先，不回退 env
+    if hasattr(litellm, "use_chat_completions_url_for_anthropic_messages"):
+        return bool(litellm.use_chat_completions_url_for_anthropic_messages)
+
+    # 仅属性缺失时读 env（严格解析由 _env_bool 保证）
     return _env_bool(
         "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", default=False
     )
@@ -71,17 +75,26 @@ def set_g0a_messages_mount_ready(ready: bool) -> None:
     clear_flag_cache()
 
 
+def is_messages_chat_native_path_ready() -> bool:
+    """Messages→Chat path ready（P0-G0A：本期 native-only；g0a_mount 不计入）。"""
+    return is_native_messages_chat_path_active()
+
+
 def is_conversion_path_ready() -> bool:
-    """Proven convert upstream path: native switch OR G0-A mount."""
-    return is_native_messages_chat_path_active() or is_g0a_messages_mount_ready()
+    """Proven Messages→Chat convert upstream path（本期 = native only）。
+
+    历史曾为 ``native ∨ g0a_mount``；L2 仅关 native 时 convert 仍可能存活，
+    故本期 g0a_mount **不计入** readiness（见设计方案 P0-G0A）。
+    """
+    return is_messages_chat_native_path_ready()
 
 
 def is_conversion_routing_active() -> bool:
-    """True only when gateway ∧ conversion ∧ proven path (ops AND matrix).
+    """True only when gateway ∧ conversion ∧ Messages→Chat native path ready.
 
     ``GATEWAY=false`` + ``CONVERSION=true`` is a misconfig: never select or
-    apply convert routes. ``CONVERSION=true`` without native/G0-A path is also
-    inactive — avoids conversion-only traffic on stock Responses misroute.
+    apply convert routes. ``CONVERSION=true`` without native path is also
+    inactive — g0a_mount alone must not activate Messages→Chat conversion.
     """
     return (
         is_protocol_aware_gateway_enabled()
@@ -112,6 +125,7 @@ def flag_snapshot() -> dict[str, object]:
         "PROTOCOL_CONVERSION_ENABLED": is_protocol_conversion_enabled(),
         "native_messages_chat_path": is_native_messages_chat_path_active(),
         "g0a_messages_mount_ready": is_g0a_messages_mount_ready(),
+        "messages_chat_native_path_ready": is_messages_chat_native_path_ready(),
         "conversion_path_ready": is_conversion_path_ready(),
         "conversion_routing_active": is_conversion_routing_active(),
         "has_metrics_salt": metrics_label_salt() is not None,

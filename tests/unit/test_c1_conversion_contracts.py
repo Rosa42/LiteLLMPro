@@ -178,9 +178,25 @@ def _chat_dep(**kwargs: object) -> Deployment:
     return Deployment(**base)  # type: ignore[arg-type]
 
 
-def test_direct_wins_when_both_direct_and_convert_exist() -> None:
+def test_direct_wins_when_both_direct_and_convert_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from shared_quota_router.conversion.registry import resolve_route
-    from shared_quota_router.models import LogicalModelProtocols
+    from shared_quota_router.feature_flags import clear_flag_cache
+    from shared_quota_router.models import LogicalModelProtocols, TransformOwner
+
+    # P0-G0A：Messages→Chat convert 仅 native；无 ADAPTER 回退
+    try:
+        import litellm
+
+        monkeypatch.setattr(
+            litellm, "use_chat_completions_url_for_anthropic_messages", True
+        )
+    except ImportError:
+        monkeypatch.setenv(
+            "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", "true"
+        )
+    clear_flag_cache()
 
     cap = ConversionCapability(
         source=ApiProtocol.ANTHROPIC_MESSAGES,
@@ -225,11 +241,27 @@ def test_direct_wins_when_both_direct_and_convert_exist() -> None:
     )
     assert r_direct is not None and r_direct.route_mode is RouteMode.DIRECT
     assert r_convert is not None and r_convert.route_mode is RouteMode.CONVERT
+    assert r_convert.transform_owner is TransformOwner.LITELLM_NATIVE
 
 
-def test_convert_candidate_only_when_policy_allows() -> None:
+def test_convert_candidate_only_when_policy_allows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from shared_quota_router.conversion.registry import resolve_route
-    from shared_quota_router.models import LogicalModelProtocols
+    from shared_quota_router.feature_flags import clear_flag_cache
+    from shared_quota_router.models import LogicalModelProtocols, TransformOwner
+
+    try:
+        import litellm
+
+        monkeypatch.setattr(
+            litellm, "use_chat_completions_url_for_anthropic_messages", True
+        )
+    except ImportError:
+        monkeypatch.setenv(
+            "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", "true"
+        )
+    clear_flag_cache()
 
     cap = ConversionCapability(
         source=ApiProtocol.ANTHROPIC_MESSAGES,
@@ -257,6 +289,7 @@ def test_convert_candidate_only_when_policy_allows() -> None:
         conversion_enabled=True,
     )
     assert ok is not None and ok.route_mode is RouteMode.CONVERT
+    assert ok.transform_owner is TransformOwner.LITELLM_NATIVE
 
     blocked = resolve_route(
         dep,
@@ -300,8 +333,17 @@ def test_filter_route_candidates_orders_direct_before_convert(
 
     monkeypatch.setenv("PROTOCOL_CONVERSION_ENABLED", "true")
     monkeypatch.setenv("PROTOCOL_AWARE_GATEWAY_ENABLED", "true")
-    from shared_quota_router.feature_flags import set_g0a_messages_mount_ready
-    set_g0a_messages_mount_ready(True)
+    # P0-G0A：Messages→Chat path ready = native only
+    try:
+        import litellm
+
+        monkeypatch.setattr(
+            litellm, "use_chat_completions_url_for_anthropic_messages", True
+        )
+    except ImportError:
+        monkeypatch.setenv(
+            "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", "true"
+        )
     clear_flag_cache()
 
     cap = ConversionCapability(

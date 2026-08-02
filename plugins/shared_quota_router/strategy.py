@@ -12,9 +12,8 @@ from typing import Any, Optional, Union
 
 from shared_quota_router.conversion.registry import resolve_route
 from shared_quota_router.feature_flags import (
-    is_conversion_routing_active,
-    is_native_messages_chat_path_active,
     is_protocol_aware_gateway_enabled,
+    is_protocol_conversion_enabled,
 )
 from shared_quota_router.lease import LeaseManager
 from shared_quota_router.models import (
@@ -27,6 +26,7 @@ from shared_quota_router.models import (
     RequestRoutingContext,
     RouteCandidate,
     RouteMode,
+    TransformOwner,
 )
 from shared_quota_router.protocol_context import (
     RequestProtocolContext,
@@ -127,7 +127,9 @@ class SharedQuotaSelector:
         lm = logical if logical is not None else self.logical_models.get(model_group)
         stream = Feature.STREAMING in protocol_ctx.required_features or False
         # Also honor raw stream via features already extracted in protocol_ctx
-        conversion_on = is_conversion_routing_active()
+        conversion_on = (
+            is_protocol_aware_gateway_enabled() and is_protocol_conversion_enabled()
+        )
         out: list[RouteCandidate] = []
         for dep in self.registry.get_by_model_group(model_group):
             route = resolve_route(
@@ -138,7 +140,13 @@ class SharedQuotaSelector:
                 logical=lm,
                 conversion_enabled=conversion_on,
             )
-            if route is not None:
+            if route is None:
+                continue
+            from shared_quota_router.route_readiness import route_candidate_enabled
+
+            if route.transform_owner.value == "direct":
+                out.append(route)
+            elif route_candidate_enabled(route):
                 out.append(route)
         out.sort(
             key=lambda r: (
@@ -712,45 +720,55 @@ class SharedQuotaRoutingStrategy:
         except StateStoreError as exc:
             logger.warning("affinity write failed: %s", exc)
 
-        # C1-04 / C2-04: resolve route mode for observability + request conversion hook
+        # C1-04 / C2-04: resolve route mode for observability + conversion hook
         route_mode = "direct"
         conversion_dir: str | None = None
+        transform_owner = TransformOwner.DIRECT
         if protocol_ctx.protocol is not None and chosen.upstream_protocol is not None:
             if chosen.upstream_protocol is protocol_ctx.protocol:
                 route_mode = "direct"
-            elif is_conversion_routing_active():
-                # Convert only when selected deployment speaks a different protocol
-                route_mode = "convert"
-                conversion_dir = (
-                    f"{protocol_ctx.protocol.value}>{chosen.upstream_protocol.value}"
-                )
-                # G0-Native：LiteLLM 原生 Messages→Chat 负责变换；禁止再跑项目 C2 改写
-                if not is_native_messages_chat_path_active():
-                    try:
-                        _apply_convert_to_request_kwargs(
-                            request_kwargs,
-                            public_protocol=protocol_ctx.protocol,
-                            upstream_protocol=chosen.upstream_protocol,
-                        )
-                    except Exception:
-                        # P1-04: convert failure after lease must not leak the lease
-                        if self.lease_manager is not None:
-                            try:
-                                self.lease_manager.release(
-                                    quota_group_id=chosen.quota_group_id,
-                                    request_id=ctx.request_id,
-                                )
-                            except StateStoreError as release_exc:
-                                logger.warning(
-                                    "lease release after convert failure failed: %s",
-                                    release_exc,
-                                )
-                        raise
+            elif (
+                is_protocol_aware_gateway_enabled()
+                and is_protocol_conversion_enabled()
+            ):
+                matched: RouteCandidate | None = None
+                for r in selector.filter_route_candidates(model, protocol_ctx):
+                    if r.deployment.deployment_id == chosen.deployment_id:
+                        matched = r
+                        break
+                if matched is not None and matched.route_mode is RouteMode.CONVERT:
+                    route_mode = "convert"
+                    transform_owner = matched.transform_owner
+                    conversion_dir = (
+                        f"{protocol_ctx.protocol.value}>{chosen.upstream_protocol.value}"
+                    )
+                    # 仅项目 adapter 改写请求；LiteLLM native 由上游 bridge 负责
+                    if transform_owner is TransformOwner.PROJECT_ADAPTER:
+                        try:
+                            _apply_convert_to_request_kwargs(
+                                request_kwargs,
+                                public_protocol=protocol_ctx.protocol,
+                                upstream_protocol=chosen.upstream_protocol,
+                            )
+                        except Exception:
+                            if self.lease_manager is not None:
+                                try:
+                                    self.lease_manager.release(
+                                        quota_group_id=chosen.quota_group_id,
+                                        request_id=ctx.request_id,
+                                    )
+                                except StateStoreError as release_exc:
+                                    logger.warning(
+                                        "lease release after convert failure failed: %s",
+                                        release_exc,
+                                    )
+                            raise
 
         _write_route_meta(
             request_kwargs,
             route_mode=route_mode,
             conversion_dir=conversion_dir,
+            transform_owner=transform_owner.value,
         )
 
         record_route_selection(
@@ -795,11 +813,14 @@ def _write_route_meta(
     *,
     route_mode: str,
     conversion_dir: str | None,
+    transform_owner: str | None = None,
 ) -> None:
     from shared_quota_router.conversion.dispatch import (
         CONVERSION_DIR_META_KEY,
         ROUTE_MODE_META_KEY,
     )
+
+    TRANSFORM_OWNER_META_KEY = "shared_quota_transform_owner"
 
     for bucket in _metadata_buckets_mutable(request_kwargs):
         bucket[ROUTE_MODE_META_KEY] = route_mode
@@ -807,6 +828,10 @@ def _write_route_meta(
             bucket[CONVERSION_DIR_META_KEY] = conversion_dir
         elif CONVERSION_DIR_META_KEY in bucket:
             bucket.pop(CONVERSION_DIR_META_KEY, None)
+        if transform_owner:
+            bucket[TRANSFORM_OWNER_META_KEY] = transform_owner
+        else:
+            bucket.pop(TRANSFORM_OWNER_META_KEY, None)
 
 
 def _apply_convert_to_request_kwargs(

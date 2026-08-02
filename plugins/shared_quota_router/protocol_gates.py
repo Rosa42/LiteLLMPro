@@ -14,7 +14,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
-from shared_quota_router.models import ApiProtocol, Feature
+from shared_quota_router.models import ApiProtocol, Feature, TransformOwner
 from shared_quota_router.protocol_context import (
     RequestProtocolContext,
     extract_required_features,
@@ -79,8 +79,10 @@ def public_reachable(
 ) -> bool:
     """True when the public protocol can be served via direct OR conversion (P3).
 
-    Conversion reachability requires dual flags + logical allowlist + registered
-    adapter + feature-compatible conversion capability on an enabled deployment.
+    Conversion reachability requires dual flags + logical allowlist +
+    feature-compatible conversion capability on an enabled deployment.
+    LITELLM_NATIVE 不强制 project ``get_converter``（P1-C4-BYPASS）；
+    PROJECT_ADAPTER 仍要求已注册 converter。
     Responses must never become reachable via conversion (C5).
     """
     from shared_quota_router.conversion.dispatch import get_converter
@@ -88,14 +90,20 @@ def public_reachable(
     from shared_quota_router.feature_flags import is_conversion_routing_active
     from shared_quota_router.models import LogicalModelProtocols
 
+    # P0-C4：入口归一化 stream ∨ STREAMING∈required
+    feats = set(required_features or {Feature.TEXT})
+    effective_stream = bool(stream) or (Feature.STREAMING in feats)
+    if effective_stream:
+        feats.add(Feature.STREAMING)
+    feats_frozen = frozenset(feats)
+
     if registry.has_verified_upstream(model_group, protocol):
         # Direct path still needs feature capability when extras requested
-        feats = required_features or frozenset({Feature.TEXT})
         if registry.filter_by_protocol(model_group, protocol):
             capable = [
                 d
                 for d in registry.filter_by_protocol(model_group, protocol)
-                if all(d.supports_feature(f) for f in feats)
+                if all(d.supports_feature(f) for f in feats_frozen)
             ]
             if capable:
                 return True
@@ -103,8 +111,32 @@ def public_reachable(
         else:
             return True
 
-    # C5: Responses never via conversion
+    # C5 revised (Policy A): Responses may be reachable via LiteLLM native bridge
+    # to Chat/Messages under profile rules — not via project adapters.
     if protocol is ApiProtocol.OPENAI_RESPONSES:
+        from shared_quota_router.route_readiness import (
+            litellm_native_responses_to_chat_enabled,
+        )
+
+        if litellm_native_responses_to_chat_enabled() and logical_models:
+            logical = None
+            if model_group in logical_models:
+                lm = logical_models[model_group]
+                logical = lm if isinstance(lm, LogicalModelProtocols) else None
+            if (
+                logical is not None
+                and logical.allow_conversion
+                and logical.allows_conversion_direction(
+                    ApiProtocol.OPENAI_RESPONSES, ApiProtocol.OPENAI_CHAT
+                )
+            ):
+                for dep in registry.get_by_model_group(model_group):
+                    if (
+                        dep.enabled
+                        and dep.upstream_protocol is ApiProtocol.OPENAI_CHAT
+                        and dep.supports_feature(Feature.TEXT)
+                    ):
+                        return True
         return False
 
     if not is_conversion_routing_active():
@@ -117,19 +149,21 @@ def public_reachable(
     if logical is None or not logical.allow_conversion:
         return False
 
-    feats = required_features or frozenset({Feature.TEXT})
     for dep in registry.get_by_model_group(model_group):
         route = resolve_route(
             dep,
             public_protocol=protocol,
-            required_features=feats,
-            stream=stream,
+            required_features=feats_frozen,
+            stream=effective_stream,
             logical=logical,
             conversion_enabled=True,
         )
         if route is None or route.conversion is None:
             continue
-        # Registered adapter must exist
+        # Native：以 readiness + capability 为准，不要求 project converter
+        if route.transform_owner is TransformOwner.LITELLM_NATIVE:
+            return True
+        # PROJECT_ADAPTER：须有已注册 converter
         try:
             get_converter((route.conversion.source, route.conversion.target))
         except ProtocolAwareRoutingError:
@@ -155,13 +189,17 @@ def assert_endpoint_allowed(
 
     opted_in = registry.model_opts_into_public(model_group, protocol)
     lm_map = logical_models if logical_models is not None else resolve_runtime_logical_models()
-    feats = required_features or frozenset({Feature.TEXT})
+    feats = set(required_features or {Feature.TEXT})
+    effective_stream = bool(stream) or (Feature.STREAMING in feats)
+    if effective_stream:
+        feats.add(Feature.STREAMING)
+    feats_frozen = frozenset(feats)
     reachable = public_reachable(
         model_group=model_group,
         protocol=protocol,
         registry=registry,
-        required_features=feats,
-        stream=stream,
+        required_features=feats_frozen,
+        stream=effective_stream,
         logical_models=lm_map,
     )
 
@@ -175,6 +213,15 @@ def assert_endpoint_allowed(
                 model_group=model_group,
             )
         if not reachable:
+            if effective_stream:
+                raise ProtocolAwareRoutingError(
+                    f"streaming is not supported for model {model_group!r} on "
+                    f"{protocol.value}",
+                    reason=ProtocolRoutingReason.FEATURE_UNSUPPORTED,
+                    protocol=protocol,
+                    model_group=model_group,
+                    details={"stream": True},
+                )
             raise ProtocolAwareRoutingError(
                 f"no verified Chat deployment for model {model_group!r}",
                 reason=ProtocolRoutingReason.NO_COMPATIBLE_DEPLOYMENT,
@@ -186,6 +233,16 @@ def assert_endpoint_allowed(
     # Messages / Responses: opt-in + reachable (direct or convert-eligible for Messages)
     if protocol is ApiProtocol.ANTHROPIC_MESSAGES:
         if not opted_in or not reachable:
+            # P1-A5：已 opt-in 但因 stream 导致 convert 不可达 → 明确 stream/unsupported 语义
+            if opted_in and effective_stream:
+                raise ProtocolAwareRoutingError(
+                    f"streaming conversion is unsupported for model {model_group!r} "
+                    f"on anthropic_messages (C4: stream convert rejected)",
+                    reason=ProtocolRoutingReason.FEATURE_UNSUPPORTED,
+                    protocol=protocol,
+                    model_group=model_group,
+                    details={"stream": True, "conversion": "rejected"},
+                )
             raise ProtocolAwareRoutingError(
                 f"Anthropic Messages is not enabled for model {model_group!r} "
                 f"(requires public_protocols opt-in and a verified "
@@ -197,19 +254,24 @@ def assert_endpoint_allowed(
         return
 
     if protocol is ApiProtocol.OPENAI_RESPONSES:
-        # Controlled disable until a verified Responses deployment + opt-in exist
-        # Conversion must never unlock Responses (C5).
-        has_upstream = registry.has_verified_upstream(model_group, protocol)
-        if not opted_in or not has_upstream:
-            raise ProtocolAwareRoutingError(
-                f"OpenAI Responses is not enabled for model {model_group!r} "
-                f"(MVP keeps /v1/responses disabled until a verified Responses "
-                f"deployment is configured)",
-                reason=ProtocolRoutingReason.UNSUPPORTED_PUBLIC_PROTOCOL,
-                protocol=protocol,
-                model_group=model_group,
-            )
-        return
+        # Policy A: direct Responses OR native Chat bridge (staging/profile)
+        if public_reachable(
+            model_group=model_group,
+            protocol=protocol,
+            registry=registry,
+            required_features=feats_frozen,
+            stream=effective_stream,
+            logical_models=logical_models,
+        ):
+            return
+        raise ProtocolAwareRoutingError(
+            f"OpenAI Responses is not enabled for model {model_group!r} "
+            f"(needs verified Responses upstream or native Chat bridge under "
+            f"Policy A profile + conversion allowlist)",
+            reason=ProtocolRoutingReason.UNSUPPORTED_PUBLIC_PROTOCOL,
+            protocol=protocol,
+            model_group=model_group,
+        )
 
     raise ProtocolAwareRoutingError(
         f"unsupported public protocol {protocol.value}",

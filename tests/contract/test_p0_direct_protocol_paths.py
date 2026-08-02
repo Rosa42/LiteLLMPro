@@ -332,13 +332,24 @@ async def test_p0_03_direct_messages_hits_v1_messages_with_anthropic_prefix(
 @pytest.mark.asyncio
 async def test_p0_03_messages_via_openai_prefix_misroutes_to_responses(
     mock_base: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Historical bug surface: openai/ deployments do not speak Messages.
 
-    LiteLLM routes anthropic_messages against an openai/ model through the
-    Responses-style path (/responses), not /v1/messages. Protocol-aware
-    filtering must reject such deployments before lease acquisition.
+    With G0-Native **off**, LiteLLM routes anthropic_messages against an openai/
+    model through the Responses-style path (/responses), not /v1/messages.
+    Protocol-aware filtering must reject such deployments before lease acquisition.
     """
+    try:
+        import litellm
+
+        monkeypatch.setattr(
+            litellm, "use_chat_completions_url_for_anthropic_messages", False
+        )
+    except ImportError:
+        monkeypatch.delenv(
+            "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", raising=False
+        )
     MockHandler.last_requests.clear()
     router = _router_for(
         mock_base,
@@ -359,6 +370,44 @@ async def test_p0_03_messages_via_openai_prefix_misroutes_to_responses(
         pass
     path = _last_path()
     assert "/responses" in path or path.endswith("responses")
+    assert "/messages" not in path
+
+
+@pytest.mark.asyncio
+async def test_p0_03_messages_via_openai_prefix_native_hits_chat_completions(
+    mock_base: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G0-Native on: openai/ + anthropic_messages → /chat/completions (not /messages)."""
+    try:
+        import litellm
+
+        monkeypatch.setattr(
+            litellm, "use_chat_completions_url_for_anthropic_messages", True
+        )
+    except ImportError:
+        monkeypatch.setenv(
+            "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", "true"
+        )
+    MockHandler.last_requests.clear()
+    router = _router_for(
+        mock_base,
+        model_name="msg-model",
+        litellm_model="openai/msg-model",
+        deployment_id="msg-openai-dep",
+    )
+    try:
+        await router.aanthropic_messages(
+            model="msg-model",
+            messages=[{"role": "user", "content": PROBE}],
+            max_tokens=16,
+            litellm_call_id="p0-03-msg-openai-native",
+            litellm_metadata={"protocol": "anthropic_messages"},
+        )
+    except Exception:
+        pass
+    path = _last_path()
+    assert "/chat/completions" in path or path.endswith("chat/completions")
     assert "/messages" not in path
 
 

@@ -41,6 +41,25 @@ class ProtocolAwareRoutingError(NoAvailableDeploymentError):
         self.protocol = protocol
         self.model_group = model_group
         self.details = details or {}
+        # 供 LiteLLM anthropic_endpoints getattr(e, "status_code"|"type"|"message")
+        # 剥成 ProxyException 时保留 HTTP 400 + invalid_request_error（P1-A5）
+        self._wire_message = str(message)
+
+    @property
+    def message(self) -> str:
+        return self._wire_message
+
+    @property
+    def status_code(self) -> int:
+        """协议门控失败固定 400（禁止落成 500）。"""
+        return 400
+
+    @property
+    def type(self) -> str:
+        """Anthropic / ProxyException 的 error.type。"""
+        if self.reason is ProtocolRoutingReason.NO_COMPATIBLE_DEPLOYMENT:
+            return "api_error"
+        return "invalid_request_error"
 
     def to_public_error(self) -> dict[str, Any]:
         """Native structured error for the requested public protocol."""

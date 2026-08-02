@@ -83,6 +83,14 @@ class RouteMode(str, Enum):
     CONVERT = "convert"
 
 
+class TransformOwner(str, Enum):
+    """Who owns request/response shape for this route."""
+
+    DIRECT = "direct"
+    LITELLM_NATIVE = "litellm_native"
+    PROJECT_ADAPTER = "project_adapter"
+
+
 def parse_api_protocol(value: Any) -> ApiProtocol:
     """Parse a protocol string; unknown values raise ValueError."""
     if isinstance(value, ApiProtocol):
@@ -290,8 +298,6 @@ class Deployment:
         return self.upstream_protocol is not None and self.upstream_protocol == protocol
 
     def supports_feature(self, feature: Feature) -> bool:
-        if feature is Feature.STREAMING:
-            return self.supports_streaming or Feature.STREAMING in self.supported_features
         return feature in self.supported_features
 
     def publicly_exposes(self, protocol: ApiProtocol) -> bool:
@@ -306,6 +312,7 @@ class RouteCandidate:
     deployment: Deployment
     route_mode: RouteMode
     conversion: ConversionCapability | None = None
+    transform_owner: TransformOwner = TransformOwner.DIRECT
 
 
 @dataclass(slots=True)

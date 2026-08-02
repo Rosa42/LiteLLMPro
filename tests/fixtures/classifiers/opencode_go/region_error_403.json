@@ -1,0 +1,10 @@
+{
+  "http_status": 403,
+  "body": {
+    "error": {
+      "type": "RegionError",
+      "message": "This model requires explicit opt in because it is hosted in China. [REDACTED]"
+    }
+  },
+  "notes": "脱敏样例：无真实账号/密钥/请求 ID；供 OpenCodeGoClassifier RegionError 契约测试。"
+}

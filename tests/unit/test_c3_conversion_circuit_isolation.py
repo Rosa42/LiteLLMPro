@@ -102,8 +102,17 @@ def test_convert_path_cooldown_does_not_block_direct_same_deployment(
 
     monkeypatch.setenv("PROTOCOL_CONVERSION_ENABLED", "true")
     monkeypatch.setenv("PROTOCOL_AWARE_GATEWAY_ENABLED", "true")
-    from shared_quota_router.feature_flags import set_g0a_messages_mount_ready
-    set_g0a_messages_mount_ready(True)
+    # P0-G0A：Messages→Chat path ready = native only
+    try:
+        import litellm
+
+        monkeypatch.setattr(
+            litellm, "use_chat_completions_url_for_anthropic_messages", True
+        )
+    except ImportError:
+        monkeypatch.setenv(
+            "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", "true"
+        )
     clear_flag_cache()
 
     store = StateStore(Mem())

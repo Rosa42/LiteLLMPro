@@ -41,6 +41,10 @@ def _cmd_apply(args: argparse.Namespace) -> int:
             args.plans,
             args.output,
             backup_dir=args.backup_dir,
+            # P1-SOT：唯一批准输入 → 写入 YAML（非裸 env）
+            enable_messages_chat_native=bool(
+                getattr(args, "enable_messages_chat_native", False)
+            ),
         )
     except ConfigValidationError as exc:
         print(f"APPLY FAILED (previous litellm.yaml untouched): {exc}", file=sys.stderr)
@@ -95,6 +99,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Backup directory (default: config/backups)",
+    )
+    a.add_argument(
+        "--enable-messages-chat-native",
+        action="store_true",
+        default=False,
+        help=(
+            "P1-SOT: 批准 Messages→Chat G0-Native；仅当 plans 存在 "
+            "anthropic_messages→openai_chat convert policy 时写入 YAML true"
+        ),
     )
     a.add_argument("--json", action="store_true", help="Also print machine-readable meta")
     a.set_defaults(func=_cmd_apply)

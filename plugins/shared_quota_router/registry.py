@@ -117,8 +117,7 @@ def _parse_upstream_protocol(info: dict[str, Any]) -> ApiProtocol | None:
 
 
 def _parse_supports_streaming(info: dict[str, Any], features: frozenset[Feature]) -> bool:
-    if "supports_streaming" in info:
-        return bool(info.get("supports_streaming"))
+    """Denormalized compat field; runtime SoT is supported_features (P0-SOT)."""
     return Feature.STREAMING in features
 
 

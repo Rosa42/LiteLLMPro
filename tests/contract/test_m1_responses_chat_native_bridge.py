@@ -1,7 +1,4 @@
-"""P4-01：Messages→Chat path probe（P0-G0A native-only）。
-
-g0a mount  alone 不得激活 convert；正向路径见 native contract 测。
-"""
+"""M1: Responses public → Chat via LiteLLM native bridge."""
 
 from __future__ import annotations
 
@@ -18,7 +15,7 @@ _PLUGINS = os.path.join(_ROOT, "plugins")
 if _PLUGINS not in sys.path:
     sys.path.insert(0, _PLUGINS)
 
-pytest.importorskip("litellm", reason="litellm required for P4 conversion probe")
+pytest.importorskip("litellm", reason="litellm required for M1 Responses bridge")
 from litellm import Router  # noqa: E402
 
 from shared_quota_router.bootstrap import register  # noqa: E402
@@ -33,7 +30,6 @@ from shared_quota_router.state_store import StateStore  # noqa: E402
 from shared_quota_router.strategy import SharedQuotaRoutingStrategy  # noqa: E402
 
 FAKE_KEY = "fake-key-not-a-secret"
-PROBE = "x"
 
 
 class MemRedis:
@@ -94,68 +90,53 @@ def mock_base() -> str:
     server.shutdown()
 
 
+def _last_path() -> str:
+    assert MockHandler.last_requests, "mock recorded no requests"
+    return str(MockHandler.last_requests[-1]["path"])
+
+
 @pytest.mark.asyncio
-async def test_p4_01_g0a_alone_does_not_activate_messages_chat_convert(
+async def test_m1_responses_glm_hits_chat_completions_via_native_bridge(
     mock_base: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """P0-G0A：g0a mount 不计入 path ready；native off 时 convert 不激活（无 ADAPTER 回退）。
-
-    历史曾用 g0a 复现 G0-B 误路由 /responses；本期该路径关闭。
-    正向路径见 ``test_p4_native_*``。
-    """
-    import litellm
-
     monkeypatch.setenv("PROTOCOL_AWARE_GATEWAY_ENABLED", "true")
     monkeypatch.setenv("PROTOCOL_CONVERSION_ENABLED", "true")
-    monkeypatch.setattr(
-        litellm, "use_chat_completions_url_for_anthropic_messages", False
-    )
-    from shared_quota_router.feature_flags import set_g0a_messages_mount_ready
-
-    set_g0a_messages_mount_ready(True)
+    monkeypatch.setenv("SHARED_QUOTA_ENV_PROFILE", "staging")
     clear_flag_cache()
     MockHandler.last_requests.clear()
 
     model_list = [
         {
-            "model_name": "pilot",
+            "model_name": "glm-5.2",
             "model_info": {
-                "id": "chat-convert",
-                "deployment_id": "chat-convert",
+                "id": "chat-glm",
+                "deployment_id": "chat-glm",
                 "provider_id": "mock",
-                "quota_group_id": "q-convert",
+                "quota_group_id": "q-glm",
                 "priority": 10,
                 "enabled": True,
                 "upstream_protocol": "openai_chat",
                 "supported_features": ["text", "streaming", "tools"],
                 "supports_streaming": True,
-                "public_protocols": ["anthropic_messages", "openai_chat"],
-                "conversions": [
-                    {
-                        "from": "anthropic_messages",
-                        "to": "openai_chat",
-                        "fidelity": "equivalent",
-                        "streaming": False,
-                        "features": {"request": ["text"], "response": ["text"]},
-                    }
-                ],
+                "public_protocols": ["openai_chat", "openai_responses"],
             },
             "litellm_params": {
-                "model": "openai/pilot",
+                "model": "openai/glm-5.2",
                 "api_base": mock_base,
                 "api_key": FAKE_KEY,
+                "use_chat_completions_api": True,
             },
         }
     ]
     logical = {
-        "pilot": LogicalModelProtocols(
-            model_group="pilot",
+        "glm-5.2": LogicalModelProtocols(
+            model_group="glm-5.2",
             public_protocols=frozenset(
-                {ApiProtocol.ANTHROPIC_MESSAGES, ApiProtocol.OPENAI_CHAT}
+                {ApiProtocol.OPENAI_CHAT, ApiProtocol.OPENAI_RESPONSES}
             ),
             allow_conversion=True,
             allowed_conversions=frozenset(
-                {(ApiProtocol.ANTHROPIC_MESSAGES, ApiProtocol.OPENAI_CHAT)}
+                {(ApiProtocol.OPENAI_RESPONSES, ApiProtocol.OPENAI_CHAT)}
             ),
         )
     }
@@ -165,18 +146,24 @@ async def test_p4_01_g0a_alone_does_not_activate_messages_chat_convert(
         lease_manager=LeaseManager(redis),
         logical_models=logical,
     )
-    router = Router(model_list=model_list, set_verbose=False)
+    router = Router(model_list=model_list, set_verbose=False, num_retries=0)
     register(router, strategy=strategy)
 
-    with pytest.raises(Exception):
-        await router.aanthropic_messages(
-            model="pilot",
-            messages=[{"role": "user", "content": PROBE}],
-            max_tokens=16,
-            litellm_call_id="p4-01-convert",
-            litellm_metadata={"protocol": "anthropic_messages"},
-        )
-
-    assert MockHandler.last_requests == [], (
-        "native off + g0a only 不得打到 upstream（无 convert 候选）"
+    resp = await router.aresponses(
+        model="glm-5.2",
+        input="hello",
+        litellm_call_id="m1-responses-1",
+        litellm_metadata={"protocol": "openai_responses"},
+        metadata={"protocol": "openai_responses"},
     )
+
+    path = _last_path()
+    assert "/chat/completions" in path, f"expected chat completions, got {path!r}"
+    assert "/responses" not in path or path.rstrip("/").endswith("chat/completions")
+
+    payload = resp if isinstance(resp, dict) else None
+    if payload is None and hasattr(resp, "model_dump"):
+        payload = resp.model_dump()
+    assert isinstance(payload, dict)
+    # Native ResponsesAPIResponse shape
+    assert payload.get("object") == "response" or "output" in payload or "id" in payload

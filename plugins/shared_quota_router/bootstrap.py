@@ -139,6 +139,7 @@ def register(router: Any, strategy: SharedQuotaRoutingStrategy | None = None) ->
     except Exception as exc:  # noqa: BLE001
         logger.warning("callback registry bind skipped: %s", exc)
     logger.info("shared_quota_router registered on router id=%s", id(router))
+    _try_patch_stream_disconnect_cleanup()
     return strat
 
 
@@ -161,11 +162,68 @@ def _try_mount_discovery() -> None:
         logger.warning("discovery route mount skipped: %s", exc)
 
 
+def _try_patch_stream_disconnect_cleanup() -> None:
+    """C1-05: release shared-quota lease when LiteLLM streaming cleanup runs."""
+    try:
+        from litellm.proxy.common_request_processing import (
+            ProxyBaseLLMRequestProcessing,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("stream disconnect patch skipped (import): %s", exc)
+        return
+
+    if getattr(ProxyBaseLLMRequestProcessing, "_sq_disconnect_patch_applied", False):
+        return
+
+    original = ProxyBaseLLMRequestProcessing._finalize_streaming_generator_cleanup
+
+    @staticmethod
+    async def _finalize_with_shared_quota_release(
+        request: Any,
+        request_data: dict,
+        response: Any,
+        stream_completed: bool = False,
+        client_disconnected: bool = False,
+    ) -> None:
+        await original(
+            request=request,
+            request_data=request_data,
+            response=response,
+            stream_completed=stream_completed,
+            client_disconnected=client_disconnected,
+        )
+        if client_disconnected or not stream_completed:
+            if isinstance(request_data, dict):
+                get_callback().release_stream_lease_if_active(request_data)
+
+    ProxyBaseLLMRequestProcessing._finalize_streaming_generator_cleanup = (  # type: ignore[method-assign]
+        _finalize_with_shared_quota_release
+    )
+    ProxyBaseLLMRequestProcessing._sq_disconnect_patch_applied = True
+    logger.info("shared_quota_router stream disconnect cleanup patch applied")
+
+
+def _try_mount_anthropic_wire(*, force: bool = False) -> None:
+    """P1-A5：Messages 路径 ProxyException → Anthropic wire（不改 upstream）。"""
+    try:
+        from shared_quota_router.anthropic_wire import mount_anthropic_wire_guard
+
+        if mount_anthropic_wire_guard(force=force):
+            logger.info(
+                "shared_quota_router anthropic wire guard ready%s",
+                " (force remount)" if force else "",
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("anthropic wire guard mount skipped: %s", exc)
+
+
 async def _wait_and_register(timeout_seconds: float = 60.0, interval: float = 0.1) -> None:
     import time
 
-    # Mount discovery as early as the FastAPI app exists (router may still be None).
+    # Mount discovery / wire 尽早挂上（router 可能仍未就绪）。
     _try_mount_discovery()
+    _try_mount_anthropic_wire()
+    _try_patch_stream_disconnect_cleanup()
 
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -175,8 +233,11 @@ async def _wait_and_register(timeout_seconds: float = 60.0, interval: float = 0.
             router = getattr(proxy_server, "llm_router", None)
             if router is not None:
                 register(router)
-                # Re-attempt mount in case app was not ready on first try
+                # Re-attempt mount in case app was not ready on first try.
+                # Wire 必须 force：LiteLLM 可能在 startup hook 之后覆盖 ProxyException handler。
                 _try_mount_discovery()
+                _try_mount_anthropic_wire(force=True)
+                _try_patch_stream_disconnect_cleanup()
                 logger.info("shared_quota_router registered via proxy startup hook")
                 return
         except Exception as exc:  # noqa: BLE001
@@ -192,6 +253,8 @@ def register_proxy_startup() -> None:
     """LITELLM_WORKER_STARTUP_HOOKS target (sync)."""
     # Best-effort immediate mount (app may already exist at hook time)
     _try_mount_discovery()
+    _try_mount_anthropic_wire()
+    _try_patch_stream_disconnect_cleanup()
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
@@ -207,3 +270,4 @@ def register_proxy_startup() -> None:
 
 # Module-level instance for litellm_settings.callbacks
 callback_instance = get_callback()
+_try_patch_stream_disconnect_cleanup()

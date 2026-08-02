@@ -104,8 +104,17 @@ def test_p1_01_selector_gets_logical_models_without_monkeypatch(
 ) -> None:
     monkeypatch.setenv("PROTOCOL_CONVERSION_ENABLED", "true")
     monkeypatch.setenv("PROTOCOL_AWARE_GATEWAY_ENABLED", "true")
-    from shared_quota_router.feature_flags import set_g0a_messages_mount_ready
-    set_g0a_messages_mount_ready(True)
+    # P0-G0A：Messages→Chat path ready = native only
+    try:
+        import litellm
+
+        monkeypatch.setattr(
+            litellm, "use_chat_completions_url_for_anthropic_messages", True
+        )
+    except ImportError:
+        monkeypatch.setenv(
+            "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", "true"
+        )
     clear_flag_cache()
 
     from shared_quota_router.lease import LeaseManager
@@ -278,8 +287,17 @@ def test_p1_05_optional_params_are_declared_dropped(
 ) -> None:
     monkeypatch.setenv("PROTOCOL_CONVERSION_ENABLED", "true")
     monkeypatch.setenv("PROTOCOL_AWARE_GATEWAY_ENABLED", "true")
-    from shared_quota_router.feature_flags import set_g0a_messages_mount_ready
-    set_g0a_messages_mount_ready(True)
+    # P0-G0A：dispatch 亦需 native path ready
+    try:
+        import litellm
+
+        monkeypatch.setattr(
+            litellm, "use_chat_completions_url_for_anthropic_messages", True
+        )
+    except ImportError:
+        monkeypatch.setenv(
+            "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", "true"
+        )
     clear_flag_cache()
     from shared_quota_router.conversion.adapters.messages_to_chat import (
         MessagesToChatConverter,
@@ -312,8 +330,17 @@ def test_p3_conversion_only_messages_gate(
 ) -> None:
     monkeypatch.setenv("PROTOCOL_CONVERSION_ENABLED", "true")
     monkeypatch.setenv("PROTOCOL_AWARE_GATEWAY_ENABLED", "true")
-    from shared_quota_router.feature_flags import set_g0a_messages_mount_ready
-    set_g0a_messages_mount_ready(True)
+    # P0-G0A：Messages→Chat path ready = native only
+    try:
+        import litellm
+
+        monkeypatch.setattr(
+            litellm, "use_chat_completions_url_for_anthropic_messages", True
+        )
+    except ImportError:
+        monkeypatch.setenv(
+            "LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES", "true"
+        )
     clear_flag_cache()
 
     cap = ConversionCapability(
@@ -388,8 +415,6 @@ def test_p3_responses_never_via_conversion(
 ) -> None:
     monkeypatch.setenv("PROTOCOL_CONVERSION_ENABLED", "true")
     monkeypatch.setenv("PROTOCOL_AWARE_GATEWAY_ENABLED", "true")
-    from shared_quota_router.feature_flags import set_g0a_messages_mount_ready
-    set_g0a_messages_mount_ready(True)
     clear_flag_cache()
     reg = DeploymentRegistry()
     reg.add(
@@ -422,7 +447,7 @@ def test_p3_responses_never_via_conversion(
 def test_p3_conversion_only_denied_without_path_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CONVERSION=true 但无 native/g0a 时，conversion-only 不可达。"""
+    """CONVERSION=true 但无 native 时，conversion-only 不可达（g0a 不计入）。"""
     monkeypatch.setenv("PROTOCOL_CONVERSION_ENABLED", "true")
     monkeypatch.setenv("PROTOCOL_AWARE_GATEWAY_ENABLED", "true")
     set_g0a_messages_mount_ready(False)
