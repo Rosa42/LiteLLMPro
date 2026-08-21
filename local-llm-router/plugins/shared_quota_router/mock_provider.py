@@ -12,7 +12,8 @@ Scenario control via header X-Mock-Scenario or query ?scenario=
   ok | exhaust | short_429 | auth | timeout | stream_ok | stream_fail_after
 
 Request path recording (test helpers):
-  MockHandler.last_requests — list of {path, method, auth_style, has_tools, stream}
+  MockHandler.last_requests — list of {path, method, auth_style, has_tools, stream,
+  probe_marker_hit}
   Does not store Authorization values or full prompt bodies.
 """
 
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar
@@ -63,6 +65,14 @@ class MockHandler(BaseHTTPRequestHandler):
         return "none"
 
     def _record(self, path: str, body: dict[str, Any]) -> None:
+        marker = (os.environ.get("P0_PROBE_B_MARKER") or "").strip()
+        probe_marker_hit = False
+        if marker:
+            try:
+                blob = json.dumps(body, ensure_ascii=False)
+            except (TypeError, ValueError):
+                blob = ""
+            probe_marker_hit = marker in blob
         MockHandler.last_requests.append(
             {
                 "path": path,
@@ -74,6 +84,7 @@ class MockHandler(BaseHTTPRequestHandler):
                 "has_input": "input" in body,
                 # Length only — never store body text.
                 "body_keys": sorted(body.keys()),
+                "probe_marker_hit": probe_marker_hit,
             }
         )
 

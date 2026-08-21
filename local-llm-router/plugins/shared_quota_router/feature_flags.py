@@ -117,6 +117,11 @@ def metrics_raw_labels_allowed() -> bool:
     return _env_bool("SHARED_QUOTA_METRICS_RAW_LABELS", default=False)
 
 
+def p0_probe_b_marker() -> str:
+    """Non-empty => inject this exact token into messages in pre-call. Default empty."""
+    return (os.environ.get("P0_PROBE_B_MARKER") or "").strip()
+
+
 @lru_cache(maxsize=1)
 def flag_snapshot() -> dict[str, object]:
     """Cached view for docs/tests; call ``clear_flag_cache`` after env changes in tests."""

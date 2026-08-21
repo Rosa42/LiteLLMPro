@@ -1,0 +1,33 @@
+# 网关框架升级
+
+本目录存放 **LiteLLM 本地中转站** 从「共享额度路由」演进到「可插拔请求增强网关」的设计与计划。
+
+与 `docs/分阶段开发方案.md`（阶段 1–9 额度路由）互补：那份文档覆盖已落地的配额 / 协议网关；这里覆盖后续能力。
+
+实现仍落在 `local-llm-router/plugins/shared_quota_router/`，不修改 `upstream/litellm` 业务逻辑。挂载方式继续走 G0-B（pre-call / strategy / callback）。
+
+主文档状态：**方向通过；P0 已跑完（A PASS / B FAIL）。方案仍不通过施工评审。** Q1–Q6 已冻结。不得拆规格；下一步是按 §5 失败分支改画挂点。
+
+## 文档地图
+
+| 文件 | 类型 | 内容 |
+|------|------|------|
+| [design-proposal.md](./design-proposal.md) | **设计提案（当前主文档）** | 可插拔模块、多模型组合（图像翻译）、网关层共享记忆 |
+| [plans/2026-08-21-p0-probes.md](./plans/2026-08-21-p0-probes.md) | **P0 探针执行计划** | 探针 A（M3 识图）/ 探针 B（pre-call 改 messages） |
+| [reports/p0-probe-a.md](./reports/p0-probe-a.md) | **P0 报告** | 探针 A = PASS（直连 MiniMax `VISION_OK`） |
+| [reports/p0-probe-b.md](./reports/p0-probe-b.md) | **P0 报告** | 探针 B = FAIL（网关 MiniMax-M3 回 `pong`，marker 未到上游） |
+| [pipeline.md](./pipeline.md) | 规格（待写） | 信封 + 阶段契约；增减模块的不变量 |
+| [vision-compose.md](./vision-compose.md) | 规格（待写） | 视觉翻译配方、全量历史替换 |
+| [memory.md](./memory.md) | 规格（待写） | 本地 AI app 共享的网关记忆 |
+
+P0 已跑完且探针 B FAIL，因此仍不拆规格、不写视觉合成。不要在本目录外另开平行设计稿。实现任务也不要塞进 `local-llm-router/docs/tasks.md` 的协议网关任务板。
+
+## 与现有文档的关系
+
+| 现有文档 | 关系 |
+|----------|------|
+| `升级版的开发设计方案.md` | 额度路由总设计；本升级不取代它 |
+| `docs/分阶段开发方案.md` | 阶段 1–9 执行基线 |
+| `local-llm-router/docs/architecture.md` | 当前已实现架构摘要 |
+| `local-llm-router/docs/adr/ADR-protocol-gateway-integration-boundary.md` | G0-B 边界；流水线挂在该边界内 |
+| `local-llm-router/AGENTS.md` | 实现约束 |

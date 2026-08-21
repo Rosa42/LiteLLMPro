@@ -151,7 +151,7 @@ model_list:
       priority: 25
       enabled: true
       upstream_protocol: anthropic_messages
-      supported_features: [text, streaming, tools, reasoning]
+      supported_features: [text, streaming, tools, reasoning, image]
       supports_streaming: true
       public_protocols: [anthropic_messages]
     litellm_params:

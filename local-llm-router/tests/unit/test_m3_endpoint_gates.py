@@ -20,6 +20,7 @@ from shared_quota_router.protocol_errors import (
 from shared_quota_router.protocol_gates import (
     assert_chat_upstream_prefix,
     assert_endpoint_allowed,
+    assert_required_features,
     enforce_pre_call_gates,
 )
 from shared_quota_router.registry import DeploymentRegistry, deployment_from_model_entry
@@ -327,6 +328,87 @@ def test_m3_04_valid_chat_tools_ok() -> None:
     ctx = enforce_pre_call_gates(data, call_type="acompletion", registry=reg)
     assert Feature.TOOLS in ctx.required_features
     assert Feature.STREAMING in ctx.required_features
+
+
+# ----- MiniMax-M3 IMAGE (Task 3; Probe A PASS) -----
+
+_M3_TEXT_FEATURES = frozenset(
+    {Feature.TEXT, Feature.STREAMING, Feature.TOOLS, Feature.REASONING}
+)
+_M3_IMAGE_FEATURES = _M3_TEXT_FEATURES | {Feature.IMAGE}
+
+_M3_IMAGE_BLOCK = {
+    "type": "image",
+    "source": {"type": "base64", "media_type": "image/png", "data": "x"},
+}
+
+
+def _m3_deployment(*, features: frozenset[Feature]) -> Deployment:
+    return Deployment(
+        deployment_id="minimax-official-msg-MiniMax-M3",
+        model_group="MiniMax-M3",
+        upstream_model="anthropic/MiniMax-M3",
+        provider_id="minimax",
+        quota_group_id="minimax-official",
+        priority=25,
+        upstream_protocol=ApiProtocol.ANTHROPIC_MESSAGES,
+        supported_features=features,
+        supports_streaming=Feature.STREAMING in features,
+        public_protocols=frozenset({ApiProtocol.ANTHROPIC_MESSAGES}),
+    )
+
+
+def _m3_messages_image_body() -> dict:
+    return {
+        "model": "MiniMax-M3",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hi"},
+                    dict(_M3_IMAGE_BLOCK),
+                ],
+            }
+        ],
+    }
+
+
+def test_m3_image_assert_required_features_ok_when_supported() -> None:
+    reg = DeploymentRegistry([_m3_deployment(features=_M3_IMAGE_FEATURES)])
+    assert_required_features(
+        model_group="MiniMax-M3",
+        protocol=ApiProtocol.ANTHROPIC_MESSAGES,
+        required_features=frozenset({Feature.TEXT, Feature.IMAGE}),
+        registry=reg,
+    )
+
+
+def test_m3_image_assert_required_features_rejected_when_unsupported() -> None:
+    reg = DeploymentRegistry([_m3_deployment(features=_M3_TEXT_FEATURES)])
+    with pytest.raises(ProtocolAwareRoutingError) as ei:
+        assert_required_features(
+            model_group="MiniMax-M3",
+            protocol=ApiProtocol.ANTHROPIC_MESSAGES,
+            required_features=frozenset({Feature.TEXT, Feature.IMAGE}),
+            registry=reg,
+        )
+    assert ei.value.reason is ProtocolRoutingReason.FEATURE_UNSUPPORTED
+
+
+def test_m3_image_pre_call_rejected_when_unsupported() -> None:
+    reg = DeploymentRegistry([_m3_deployment(features=_M3_TEXT_FEATURES)])
+    data = _m3_messages_image_body()
+    with pytest.raises(ProtocolAwareRoutingError) as ei:
+        enforce_pre_call_gates(data, call_type="anthropic_messages", registry=reg)
+    assert ei.value.reason is ProtocolRoutingReason.FEATURE_UNSUPPORTED
+
+
+def test_m3_image_pre_call_ok_when_supported() -> None:
+    reg = DeploymentRegistry([_m3_deployment(features=_M3_IMAGE_FEATURES)])
+    data = _m3_messages_image_body()
+    ctx = enforce_pre_call_gates(data, call_type="anthropic_messages", registry=reg)
+    assert Feature.IMAGE in ctx.required_features
+    assert ctx.protocol is ApiProtocol.ANTHROPIC_MESSAGES
 
 
 def test_m3_04_generator_drop_params_false() -> None:

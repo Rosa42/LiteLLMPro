@@ -37,3 +37,7 @@ Client → LiteLLM Proxy (shared_quota_router)
 差距总结：`docs/phase-reports/unified-api-vs-multi-protocol-progress.md`。
 
 **现状要点：** 同协议多供应商 Chat 路由已可用；跨协议转换运行时默认关闭；staging 启用前须通过 remaining-dev-plan Phase 4 探针。
+
+## 框架升级（规划中）
+
+请求增强流水线（视觉合成、跨软件记忆、可插拔阶段）见仓库根目录 [`docs/framework-upgrade/`](../../docs/framework-upgrade/)。与上文协议感知网关互补：本文件描述已实现的额度与协议层；框架升级文档描述尚未落地的请求增强层。
