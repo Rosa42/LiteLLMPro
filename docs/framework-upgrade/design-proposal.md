@@ -4,8 +4,8 @@
 | 项       | 值                                                                      |
 | ------- | ---------------------------------------------------------------------- |
 | 文档类型    | **设计提案**（Design Proposal）                                              |
-| 状态      | **方向通过；P0 已跑完（A PASS / B FAIL）。方案仍不通过施工评审。** Q1–Q6 已冻结。不得拆 visual spec；下一步是 §5 失败分支（改画挂点）。 |
-| 日期      | 2026-08-21                                                             |
+| 状态      | **方向通过；挂点与 IMAGE 时序已闭合（S1 / S2 / S5）。** pre-call 剥图仍不可用。施工方案已拟定。Q1–Q6 已冻结。未写规格之前不实现 MiniMax 翻译。 |
+| 日期      | 2026-08-21（2026-08-24 探针；2026-08-25 挂接施工方案）                          |
 | 读者      | 本仓库后续实现与评审（含 AGENT）                                                    |
 | 实现落点    | `local-llm-router/plugins/shared_quota_router/`                        |
 | LiteLLM | 钉死 v1.90.5；不改 `upstream/litellm` 业务逻辑                                  |
@@ -13,7 +13,7 @@
 
 本文件把「可插拔模块 + 多模型组合 + 网关层共享记忆」整理成一份可评审的提案。它不是施工清单。
 
-**施工门槛：** 核心原则与现网关纪律一致。P0 探针已跑完：A PASS、B FAIL、`MiniMax-M3` 已声明 `image`。在按 §5 失败分支改画挂点并重新证明 messages 改写到达上游之前，不拆 `pipeline.md` / `vision-compose.md` / `memory.md`，不写视觉合成实现。
+**施工门槛：** 核心原则与现网关纪律一致。P0：A PASS、B FAIL（pre-call）、S1/S2/S5 PASS。`MiniMax-M3` 已声明 `image`。生产配置**未**新增 `glm-5.2-vision`。施工方案：[`plans/2026-08-25-vision-and-memory.md`](./plans/2026-08-25-vision-and-memory.md)。S5 stub 剥图不是配方；未写规格之前不实现 MiniMax 翻译。
 
 评审处理原则：只吸收与现有额度内核、fail-closed / 禁止静默降级纪律相容的建议；研究型条目记入 §17。
 
@@ -43,7 +43,7 @@
 
 ## 1. 动机
 
-本地中转站今天解决的是：**同一逻辑模型、多个 Coding Plan 账号、按额度组熔断与切换**。客户端（OpenCode、Cursor 以及其它走 OpenAI / Anthropic 兼容接口的本地 AI app）只看见 `glm-5.2`、`kimi-k3` 这类名字。
+本地中转站今天解决的是：**同一逻辑模型、多个 Coding Plan 账号、按额度组熔断与切换**。客户端（OpenCode、Cursor 以及其它走 OpenAI / Anthropic 兼容接口的本地 AI app）只看见 `glm-5.2`、`MiniMax-M3`、`claude-opus-5` 这类名字。
 
 这一层已经可用，而且必须保持完整：关增强、卸模块之后，额度路由、协议门控、流式首字节纪律应与现在行为一致。
 
@@ -102,7 +102,7 @@
 
 ### 3.2 三条原则
 
-**模块增减不破坏原架构。** 现有额度路由、协议门控、lease、熔断、探测恢复是稳定内核。增强模块只通过信封与内核对话。关掉记忆，视觉组合仍可用；关掉视觉，记忆仍可用；两个都关，等于今天的网关。禁止在 `strategy.py` 里为某个模块加特例。
+**模块增减不破坏原架构。** 现有额度路由、协议门控、lease、熔断、探测恢复是稳定内核。增强模块只通过信封与内核对话。关掉记忆，视觉组合仍可用；关掉视觉，记忆仍可用；两个都关，等于今天的网关。禁止为某个模块改选号语义；选号后改 `request_kwargs` 不在此禁令内。
 
 **组合是「翻译再执行」，不是「给文本模型装眼睛」。** 视觉模型把像素翻译成文本模型的母语（结构化标记 / OCR / 语义草图）。文本模型始终看不到像素，但能基于译文做原来擅长的推理与改代码。系统上限由译文质量决定。对外诚实：合成模型广告 vision；对内在交给文本模型前剥图。这是 late fusion（先专模块再文本），与 Visual ChatGPT / HuggingGPT 同类；本网关的执行模型是纯文本，early fusion / 把图像向量注入 GLM 做不到，也不做。
 
@@ -143,46 +143,61 @@
 
 ## 5. 总体架构
 
-增强层插在「协议门控之前、选账号之前」。内核不知道某个模块的业务含义，只看到改写后的 messages 和特性集。
+增强层挂在**选号之后、出发 HTTP 之前**：改的是 `request_kwargs["messages"]`（及若不同对象的 named `messages`）。内核选号语义不变。合成模型在 pre-call **推迟 IMAGE 能力检查**，否则带图请求到不了这个挂点。
 
 ```text
 本地 AI app（OpenCode / Cursor / 其它）
         │  逻辑模型名；messages 里可能带原图
         ▼
-LiteLLM Proxy  pre-call hook（**意向挂点**；messages 改写到达上游 = 探针 B，尚未证明）
+LiteLLM Proxy  pre-call hook
+        │  注入协议 metadata（G0-B：raise 与 metadata 仍有效）
+        │  现有协议 / 特性门控
+        │    合成模型：推迟 IMAGE（S5）
+        │    纯 glm-5.2 带图：FEATURE_UNSUPPORTED
+        ▼
+额度路由 select（strategy.get_available_deployment）
+        │  为本跳执行模型选账号；不改 Fill First / affinity / tried / lease
         │
-        │  请求增强流水线 = 内核旁路，可整段关闭
+        │  请求增强 = 选号后改 request_kwargs；可整段关闭
         ├─ 建信封
         ├─ 解析 workspace scope（未知则记忆跳过）
-        ├─ [模块] 视觉翻译     配方命中且有图；可卸；fail-closed
-        ├─ [模块] 记忆检索     有 workspace 才检索；可卸；超时 fail-open
-        ├─ [模块] 上下文预算   只裁注入段；可卸
+        ├─ [模块] 视觉翻译 / 剥图   配方命中且有图；可卸；fail-closed
+        ├─ [模块] 记忆检索         有 workspace 才检索；可卸；超时 fail-open
+        ├─ [模块] 上下文预算       只裁注入段；可卸
         │
-        ├─ 现有协议 / 特性门控     内核
-        └─ 现有额度路由            内核：为本跳执行模型选账号
-                │
-                ▼
-        上游执行模型（用户看见的流只来自这里）
-                │
+        ▼
+上游执行模型（用户看见的流只来自这里；出发 body 已无 image）
+        │
         ├─ 流式首字节门（内核）
         └─ [模块] 记忆抽取（异步；脱敏后才入库；可卸）
 ```
 
-V1 流水线是**声明的线性顺序**，不是 DAG。记忆检索依赖视觉译文，必须在翻译之后；无图时翻译是空操作，记忆仍可跑。PII 扫描若将来要做，作为记忆写入路径上的步骤，不必与翻译并行抢首字节。并行 DAG 留到真有两个互不依赖且都挡首字节的模块再加。
+V1 流水线是**声明的线性顺序**，不是 DAG。记忆检索依赖视觉译文，必须在翻译之后、出发 HTTP 之前；无图时翻译是空操作，记忆仍可跑。PII 扫描若将来要做，作为记忆写入路径上的步骤，不必与翻译并行抢首字节。并行 DAG 留到真有两个互不依赖且都挡首字节的模块再加。
 
 视觉翻译模块内部会**再走一次**额度路由去调用视觉模型。子调用有自己的 quota group、lease、tried-set。子调用耗尽不得把执行模型账号标成 `SHARED_QUOTA_EXHAUSTED`。二者额度本来就分开，不存在「从 GLM 额度里预留 15% 给识图」这种跨组预留。
 
-挂载点意向曾是：`async_pre_call_hook` 内、`enforce_pre_call_gates` **之前**改 `data["messages"]`，然后现有 IMAGE 门控看到的已是剥图后的请求。
+### 5.1 挂点证据（不要再把 pre-call 当剥图点）
 
-**探针 B（2026-08-21）FAIL。** live `POST /v1/messages` 打 `MiniMax-M3`：客户端 body 不含 marker，容器 env 有 marker，助手原文为 `pong`。pre-call 对 `data["messages"]` 的改写**没有**到达 Messages 上游。该挂点不能用来做 V1 剥图。证据：[`reports/p0-probe-b.md`](./reports/p0-probe-b.md)。
+曾意向：`async_pre_call_hook` 里、`enforce_pre_call_gates` **之前**改 `data["messages"]`，让 IMAGE 门控看到已剥图的请求。
 
-现有证据：
+**探针 B（2026-08-21）FAIL。** live `POST /v1/messages` 打 `MiniMax-M3`：客户端 body 不含 marker，助手原文为 `pong`。pre-call 对 `data["messages"]` 的改写**没有**到达 Messages 上游。该挂点不能用来做 V1 剥图。证据：[`reports/p0-probe-b.md`](./reports/p0-probe-b.md)。
 
-- G0-B 已证明：pre-call **就地写入 metadata** 能进 strategy；门控 **raise** 能挡住请求。
-- 「raise 生效」≠「mutate `data["messages"]` 会到达上游 HTTP」——探针 B 已否定后者。
-- C2 已验证的改写路径是 **select 之后** mutation `request_kwargs`（转换层）。C2 的 S3「hook return may be discarded」针对的是 **post_call 返回值**，不要和 pre-call 请求体混为一谈。Chat 改写仍属未证明，**不得**据此实现 Chat 合成模型。
+已证明的路径：
 
-**失败分支（现已生效，尚未实现）：** 不能只把流水线「挪到 strategy」了事。IMAGE 门控在 pre-call、select 之前；若剥图发生在 select 之后，带图合成请求会先被 `FEATURE_UNSUPPORTED` 打死。替代形态是：对合成模型在门控中**豁免 IMAGE**（或把 IMAGE 门控推迟到剥图之后），再在 strategy 层按 C2 路径改 `request_kwargs`。§5 图必须改画。在新挂点被 live Messages 探针证明之前，不写视觉合成代码。
+| 项 | 结论 | 证据 |
+| --- | --- | --- |
+| pre-call 改 `data["messages"]` | **不到**上游 | 探针 B FAIL |
+| 选号后改 `request_kwargs["messages"]` | **到**上游 | S1 live MiniMax 回显；S2 mock `probe_marker_hit` 对照 |
+| 合成模型推迟 IMAGE + 选号后剥图 | **出发 HTTP 无图**；纯 `glm-5.2` 带图仍 400 | S5 stub 剥图（非 MiniMax 翻译） |
+
+其它仍成立：
+
+- G0-B：pre-call **就地写入 metadata** 能进 strategy；门控 **raise** 能挡住请求。
+- 「raise 生效」≠「mutate `data["messages"]` 会到达上游 HTTP」。
+- C2 的 S3「hook return may be discarded」针对 **post_call 返回值**，不要和 pre-call 请求体混为一谈。
+- Chat 改写仍属未证明，**不得**据此实现 Chat 合成模型。
+
+S5 stub（`S5_STUB_PEEL`，默认关）只证明剥图挂点。无 stub 时合成模型带图必须 fail-closed，禁止把像素送给执行模型，也禁止空译文糊弄。真正的 MiniMax → `<visual-evidence>` 翻译仍待规格。
 
 观测：复用现有 `metrics.py`（仅 counter / gauge）。V1 阶段耗时记 **计数 + 该进程内 max**（或日志毫秒），**不**为 P95 给 metrics.py 加 histogram，也不引入 OpenTelemetry。日志带父 `request_id` + 子调用独立 id + `stage`。
 
@@ -198,7 +213,7 @@ V1 流水线是**声明的线性顺序**，不是 DAG。记忆检索依赖视觉
 
 1. 关闭全部增强 flag 后，现有单测与契约测试全绿，协议与额度语义不变。
 2. 关闭记忆模块，视觉翻译仍可运行；关闭视觉模块，记忆检索仍可运行；二者无硬依赖。
-3. 新增模块不得改变额度选号语义。允许改 callback 挂载点、协议扫描（如递归 `tool_result`）、`plans.yaml` / discovery schema。禁止为某个模块在 `strategy.py` 里加选号特例。V1 注册表是声明式有序列表 + `Stage` protocol，不做动态插件加载或依赖图。
+3. 新增模块不得改变额度选号语义。允许改 callback 挂载点、协议扫描（如递归 `tool_result`）、`plans.yaml` / discovery schema。允许在 `get_available_deployment` **选号成功之后**改 `request_kwargs`（与 C2 convert 同挂点）。禁止为某个模块改 Fill First / affinity / tried / lease。V1 注册表是声明式有序列表 + `Stage` protocol，不做动态插件加载或依赖图。
 4. 失败策略写在模块自己身上：视觉 fail-closed；记忆 fail-open。内核 Redis fail-closed 不延伸到记忆。
 5. 模块不得在用户可见首字节之后改上游或拼接另一模型输出。
 6. Feature flag 关闭后行为等于未部署该模块，无需清库才能回滚（记忆库可留盘，只是不再读写）。
@@ -213,11 +228,17 @@ V1 流水线是**声明的线性顺序**，不是 DAG。记忆检索依赖视觉
 
 建议超时（本机网关，可配置）：视觉翻译整体（含上游）单独设上限；记忆检索 **≤ 300ms**，超时视为失败并 skip。视觉不得为了赶时间输出空译文。
 
-### 6.3 挂载点：意向仍是 G0-B pre-call，前提尚未证明
+### 6.3 挂载点：G0-B；剥图在选号之后
 
-不另起 G0-A HTTP 网关，是因为改 messages 若能在现有 hook 里完成，就不应推翻已采纳的边界 ADR。配置用环境变量 / 现有 feature flag，不热替换阶段实现。
+不另起 G0-A HTTP 网关。改 messages 已在现有 strategy 挂点被证明能到达 Messages 上游，不应推翻已采纳的边界 ADR。配置用环境变量 / 现有 feature flag，不热替换阶段实现。
 
-正确说法直到探针 B 通过为止：**架构成立的前提（pre-call 改 messages 到达上游）尚未被证明。** 不要再写「G0-B 已验证」来覆盖这一条。P0 验证的是协议 metadata 与门控 raise，不是请求体改写。
+正确说法：
+
+- **pre-call 改 `data["messages"]` 不到上游**（探针 B）。不要写「G0-B 已验证」来覆盖这一条。
+- **选号后改 `request_kwargs["messages"]` 到达上游**（S1 / S2）。V1 剥图与翻译写在这里。
+- P0 还证明：协议 metadata 与门控 raise 有效。
+
+S5 配套：合成模型推迟 IMAGE 能力检查；纯 `glm-5.2` 不变。无翻译器时合成模型带图 fail-closed（探针 stub 默认关）。
 
 ---
 
@@ -246,7 +267,7 @@ V1 流水线是**声明的线性顺序**，不是 DAG。记忆检索依赖视觉
 
 回滚：关掉视觉配方或从 discovery 撤下 `glm-5.2-vision` 后，客户端应不再把该名当视觉模型；`glm-5.2` 行为与今日相同。带图打到纯 `glm-5.2` 仍由现有 IMAGE 门控拒绝。
 
-**P0 配置（2026-08-21）：** 探针 A PASS 后，`MiniMax-M3` 的 `supported_features` 已含 `image`，门控单测已补。其它 MiniMax 型号与 `glm-5.2` 仍无 `image`。`glm-5.2-vision` **未**新增：探针 B FAIL，合成配方在改画挂点之前不得落地。
+**配置（2026-08-24）：** 探针 A PASS 后，`MiniMax-M3` 的 `supported_features` 已含 `image`。其它 MiniMax 型号与 `glm-5.2` 仍无 `image`。生产 `plans.yaml` / `litellm.yaml` **未**新增 `glm-5.2-vision`：S5 只在探针窗口挂过该名，测完已撤。配方落地前不得把该名写进 discovery。
 
 以后可加其它配方或 Chat 面。V1 只落地这一份 Messages 配方。
 
@@ -281,11 +302,14 @@ V1 流水线是**声明的线性顺序**，不是 DAG。记忆检索依赖视觉
 - 剥图与现有 `Feature.IMAGE` 门控：
 
 
-| 态                   | 条件                         | 结果                            |
-| ------------------- | -------------------------- | ----------------------------- |
-| 翻译成功                | 流水线在门控前剥图写回                | 不再产生 IMAGE，GLM 门控通过           |
-| 翻译失败                | 视觉模块在门控前 fail-closed       | 客户端明确错误，请求不到 GLM              |
-| 视觉关闭，带图打纯 `glm-5.2` | IMAGE 进入 required_features | 现有 `FEATURE_UNSUPPORTED`，零新代码 |
+| 态                   | 条件                                              | 结果                                      |
+| ------------------- | ----------------------------------------------- | --------------------------------------- |
+| 翻译成功                | 合成模型推迟 IMAGE；选号后剥图写回 `request_kwargs`          | 出发 HTTP 无 image；执行模型只看到译文              |
+| 翻译失败 / 翻译器未挂        | 选号后 fail-closed（S5 无 stub 即此态）                  | 客户端明确错误；像素不得送给 GLM                      |
+| 视觉关闭，带图打纯 `glm-5.2` | IMAGE 进入 required_features                      | 现有 `FEATURE_UNSUPPORTED`；S5 live 已再确认 |
+
+
+S5 stub 剥图只用于探针，**不是**占位译文，也不得在生产默认打开。
 
 
 - 上下文上限（超限策略）：
@@ -303,7 +327,7 @@ V1 流水线是**声明的线性顺序**，不是 DAG。记忆检索依赖视觉
 
 ### 7.3.1 `tool_result` 递归
 
-`extract_required_features()` 目前不递归 `tool_result` 内嵌图。全量剥图与 IMAGE 提取都必须补递归，否则「全量替换」不成立。这是协议扫描集成，允许改 `protocol_context.py`。
+`extract_required_features()` **已**递归 `tool_result` 内嵌图（S5）。stub 剥图同样递归。真正翻译流水线必须对扫到的每一张图做哈希 / 查表 / 替换 block 类型，不能只剥不译。
 
 ### 7.4 多轮与客户端历史
 
@@ -342,7 +366,8 @@ V1 流水线是**声明的线性顺序**，不是 DAG。记忆检索依赖视觉
 
 编码前仍须实测：
 
-- **探针 A（2026-08-21）：** 直连 MiniMax Anthropic Messages PASS（`VISION_OK`）。当时网关未给 M3 声明 `image`，故第一证据不走本机 `/v1/messages`。Task 3 已写入 `image` 并补门控测试。合成剥图仍被探针 B FAIL 挡住。
+- **探针 A（2026-08-21）：** 直连 MiniMax Anthropic Messages PASS（`VISION_OK`）。当时网关未给 M3 声明 `image`，故第一证据不走本机 `/v1/messages`。随后仅 M3 写入 `image`。
+- **挂点（2026-08-24）：** S1/S2 证明选号后改 `request_kwargs` 到达 Messages 上游；S5 证明合成模型可推迟 IMAGE 并剥图。MiniMax **翻译质量**仍未测，评估集（≥20 张）仍是视觉档前置。
 - 按类型选载体后，GLM 修对文件的比例高于自由 caption，且不把草图当项目源码。
 - 精确哈希在 OpenCode 多轮里命中率足够。
 
@@ -426,16 +451,18 @@ workspace 推断与规范化：
 
 每一档结束时，内核与已上线模块行为不变。观测接现有 `metrics.py`（计数 + max），不加 histogram、不做 APM。
 
-1. **双探针（2026-08-21 已跑；V1 均走 Messages）**
-  - 探针 A：PASS（直连 MiniMax）。M3 已配 `image` feature。
-  - 探针 B：FAIL（网关 MiniMax-M3 回 `pong`，marker 未到上游）。下一步改画挂点（§5），不是拆 visual spec。
-2. **Pipeline MVP**：信封、有序列表、总开关、阶段耗时计数。现有测试全绿。
-3. **视觉翻译**：评估集 → prompt 迭代 → 单图缓存 → 全量替换（含 `tool_result`）→ 质量门 + 快速失败 + §7.8 子调用。
-4. **记忆检索**：规范化 workspace + JSONL/SQLite + 只读注入。
-5. **记忆写入**：队列 enqueue + Q5 抽取；不在 `on_stream_complete` 里阻塞调用。
-6. **成本归因**：计数，不加 histogram。
+1. **双探针与挂点（V1 均走 Messages）**
+  - 探针 A（2026-08-21）：PASS（直连 MiniMax）。M3 已配 `image` feature。
+  - 探针 B（2026-08-21）：FAIL（pre-call 改 `data["messages"]` 未到上游）。
+  - remount S1 / S2 / S5（2026-08-24）：PASS。挂点 = 选号后 `request_kwargs`；合成模型推迟 IMAGE；纯 `glm-5.2` 带图仍拒。
+2. **拆规格**：`pipeline.md` / `vision-compose.md` / `memory.md`（P1 清单见 §16）。挂点已证，允许拆；未拆之前不写 MiniMax 翻译。
+3. **Pipeline MVP**：信封、有序列表、总开关、阶段耗时计数。现有测试全绿。
+4. **视觉翻译**：评估集 → prompt 迭代 → 单图缓存 → 全量替换（含 `tool_result`）→ 质量门 + 快速失败 + §7.8 子调用。生产才新增 `glm-5.2-vision`。
+5. **记忆检索**：规范化 workspace + JSONL/SQLite + 只读注入。
+6. **记忆写入**：队列 enqueue + Q5 抽取；不在 `on_stream_complete` 里阻塞调用。
+7. **成本归因**：计数，不加 histogram。
 
-不要在探针 B 的失败分支被新挂点证明之前，让视觉或记忆直接改 `messages`。
+不要在 pre-call 里剥图。不要把 S5 stub 当配方打开给真人流量。任务级拆分见 [`plans/2026-08-25-vision-and-memory.md`](./plans/2026-08-25-vision-and-memory.md)。
 
 ---
 
@@ -454,7 +481,7 @@ workspace 推断与规范化：
 | 业务只在 plugin       | 流水线在 `shared_quota_router`         |
 | Redis fail-closed | 仅额度内核                              |
 | 日志不打 Key / prompt | 现有 `metrics._safe_labels` 同样约束阶段日志 |
-| IMAGE 门控          | 执行模型请求必须先剥图                        |
+| IMAGE 门控          | 合成模型推迟检查；选号后必须剥图。纯 `glm-5.2` 带图仍拒 |
 
 
 ---
@@ -476,7 +503,7 @@ workspace 推断与规范化：
 | 记忆失败中断请求                    | 卸不下模块                        | 超时 skip                           |
 | 视觉子调用耗尽却熔断 GLM              | 错杀执行账号                       | 子调用独立 quota_group                 |
 | 子调用复用父 `litellm_call_id`    | 父 tried-set / first_byte 被污染 | 独立 request_id 与独立 ctx             |
-| 把「G0-B 已验证」当成 messages 改写已通 | 剥图未到达上游，GLM 仍 400            | 探针 B；失败则改门控顺序 + strategy mutation |
+| 把「G0-B 已验证」当成 pre-call 改 messages 已通 | 剥图未到达上游，GLM 仍 400            | 探针 B FAIL；剥图走 S1 挂点 + S5 IMAGE 推迟 |
 
 
 ---
@@ -566,33 +593,34 @@ V1 协议扫描以 Anthropic `image` 为主，并递归 `tool_result`。Chat `im
 
 ## 16. 施工门槛与下一步
 
-**结论：方向通过；P0 已跑完。探针 A PASS、探针 B FAIL。方案仍不通过施工评审。** 不得拆 `pipeline.md` / `vision-compose.md` / `memory.md`，不得实现 pre-call 剥图流水线。
+**结论：方向通过；挂点与 IMAGE 时序已闭合。** pre-call 剥图仍不可用。允许拆 `pipeline.md` / `vision-compose.md` / `memory.md`。不得把 S5 stub 当 MiniMax 翻译，不得在生产 discovery 广告 `glm-5.2-vision` 直到配方落地。
 
-### P0 — 结果（2026-08-21）
+### P0 — 结果
 
 | 项 | 结果 | 证据 |
 | --- | --- | --- |
 | 协议矩阵 | Messages-only（Q6），未改 | 提案冻结项 |
-| 探针 A | **PASS** | 直连 MiniMax Anthropic Messages，HTTP 200，助手文本精确 `VISION_OK`。[`reports/p0-probe-a.md`](./reports/p0-probe-a.md) |
-| 探针 B | **FAIL** | live `POST /v1/messages` + `MiniMax-M3`：客户端无 marker，助手回 `pong`。pre-call 改 `data["messages"]` 未到上游。[`reports/p0-probe-b.md`](./reports/p0-probe-b.md) |
-| M3 `image` | **已配置** | `plans.yaml` / 生成后的 `litellm.yaml` 仅 MiniMax-M3 含 `image`；`glm-5.2` 不含。未新增 `glm-5.2-vision`。 |
-| glm-5.2 Messages | 非本探针范围 | 同日 `/v1/messages` 打 `glm-5.2` 得 HTTP 400（Console Go 空 `messages`），与 marker 无关，记为既有路径问题。 |
+| 探针 A | **PASS**（2026-08-21） | 直连 MiniMax Anthropic Messages，HTTP 200，助手文本精确 `VISION_OK`。[`reports/p0-probe-a.md`](./reports/p0-probe-a.md) |
+| 探针 B | **FAIL**（pre-call，2026-08-21） | live MiniMax-M3 只回 `pong`。pre-call 改 `data["messages"]` 未到上游。[`reports/p0-probe-b.md`](./reports/p0-probe-b.md) |
+| remount S1 | **PASS**（2026-08-24） | 选号后改 `request_kwargs["messages"]`，live MiniMax-M3 助手文本含注入 token（客户端 JSON 无该 token）。[`reports/p0-probe-b-s1.md`](./reports/p0-probe-b-s1.md) |
+| remount S2 | **PASS**（2026-08-24） | mock 当 MiniMax 上游。对照：inject 关 → `probe_marker_hit=false`；inject 开 → `true`。出发路径 `/v1/messages`。[`reports/p0-probe-b-s2.md`](./reports/p0-probe-b-s2.md) |
+| remount S5 | **PASS**（2026-08-24） | 合成模型推迟 IMAGE，选号后 stub 剥图。live：`glm-5.2` 带图 400；探针窗口 `glm-5.2-vision` 出发无图且 mock hit。[`reports/p0-probe-s5.md`](./reports/p0-probe-s5.md) |
+| M3 `image` | **已配置** | 仅 MiniMax-M3 含 `image`；`glm-5.2` 不含。生产未新增 `glm-5.2-vision`。 |
 
-执行计划：[`plans/2026-08-21-p0-probes.md`](./plans/2026-08-21-p0-probes.md)。A 直连 MiniMax；B 以 live 网关 `/v1/messages` 为准（Docker `local-llm-router-litellm-1`，不是 `.venv`）。
+执行计划：[`plans/2026-08-21-p0-probes.md`](./plans/2026-08-21-p0-probes.md)。A 直连 MiniMax；B/S1/S2/S5 以 live 网关 `/v1/messages` 为准（Docker `local-llm-router-litellm-1`，不是 `.venv`）。
 
-**因 B FAIL，下一步不是拆规格，而是改画挂点：** 对合成模型豁免或推迟 IMAGE 门控，再在 strategy 层按 C2 路径改 `request_kwargs`，并用新的 live Messages 探针证明改写到达上游。新挂点未证明之前，禁止实现视觉翻译 / 记忆改 messages。
-
+2026-08-21 曾用 OpenCode 路径打 `glm-5.2` Messages 得 HTTP 400（Console Go 空 `messages`），与 marker 无关，不能当 B 的证据。该套餐已下线。S5 对照走的是当前 Volc `glm-5.2`：带图为 IMAGE 门控 400。
 
 
 ### P1 — 规格必须写死（本文已给默认，拆 spec 时不得再空着）
 
 - `glm-5.2-vision → glm-5.2` recipe、effective model、discovery、回滚（§7.1）
 - `internal_call`、递归阻断、深度 1、父子 ctx、quota 排他（§7.8）
-- `tool_result` 递归扫描（§7.3.1）
+- `tool_result` 递归：提取与 stub 剥图已做；翻译流水线须对每张图哈希替换（§7.3.1）
 - 记忆抽取：队列、上限、失败、进程退出；禁止在 `on_stream_complete` 里阻塞上游调用（§8.3）
 - workspace 规范化、符号链接、可信来源、未知 scope、注入安全边界（§8.2）
 - 图片字节/张数、译文 token、记忆注入上限与超限策略（§7.3）
-- 模块集成原则：不改变额度选号语义，允许改 callback / 扫描 / 配置（§6.1）
+- 模块集成原则：不改变额度选号语义；选号后允许改 `request_kwargs`（§6.1、§6.3）
 
 
 
@@ -600,7 +628,9 @@ V1 协议扫描以 Anthropic `image` 为主，并递归 `tool_result`。Chat `im
 
 HTML 白名单细化、记忆投毒防护、细粒度 ACL、histogram、bulkhead。不能替代 P1。
 
-顺序：P0 已跑完（A PASS / B FAIL）→ **先改画挂点并重做 Messages 改写探针** → 通过后才拆 `pipeline.md` / `vision-compose.md` / `memory.md` → 再编码。
+顺序：P0 挂点已证 → **拆** `pipeline.md` / `vision-compose.md` / `memory.md` → 再编码 MiniMax 翻译与记忆。不要倒回去做 pre-call 剥图。
+
+增量施工方案（差距表、模块、任务）：[`plans/2026-08-25-vision-and-memory.md`](./plans/2026-08-25-vision-and-memory.md)。
 
 ---
 
@@ -628,8 +658,8 @@ HTML 白名单细化、记忆投毒防护、细粒度 ACL、histogram、bulkhead
 | WASM / eBPF / 热重载                             | **拒绝**        | 与 G0-B、本机 Python 插件边界不符                                 |
 | 成功度量、兼容矩阵、回滚 SOP                              | **采纳**        | 见 §13–15                                                |
 | Q1=D、Q2=类型子集、Q3=网关全量替换、Q4=工作区+未知不检索           | **采纳并冻结**     | 见 §12                                                   |
-| 「G0-B 已验证」覆盖 messages 改写                      | **纠正**        | 降级为探针 B；P0 只证明 metadata/raise。C2 S3 是 post_call 返回值，不混用 |
-| 探针 B 失败则改挂 strategy，且须处理 IMAGE 门控时序           | **采纳**        | 见 §5                                                    |
+| 「G0-B 已验证」覆盖 messages 改写                      | **纠正**        | pre-call 改 body 未通（探针 B）。选号后 `request_kwargs` 已通（S1/S2）。C2 S3 是 post_call 返回值，不混用 |
+| 探针 B 失败则改挂 strategy，且须处理 IMAGE 门控时序           | **已执行**       | §5、S1/S2/S5                                              |
 | 子调用独立 request_id，不复用父 ctx                     | **采纳**        | 见 §4、§7.8                                               |
 | V1 记忆介质 JSONL/SQLite + 关键词，无向量库               | **采纳并写死**     | 见 §8.2                                                  |
 | 抽取模型 / quota_group（Q5）                        | **冻结**        | 见 §8.3、§12                                              |
@@ -647,7 +677,7 @@ HTML 白名单细化、记忆投毒防护、细粒度 ACL、histogram、bulkhead
 | workspace 规范化与可信来源                            | **采纳**        | 见 §8.2                                                  |
 | 上下文字节/token 上限                                | **采纳**        | 见 §7.3                                                  |
 | 「只新增文件」改为「不改变额度选号语义」                          | **采纳**        | 见 §2.1、§6.1                                             |
-| 方向通过、暂不通过施工评审                                 | **仍成立**       | P0 已跑完但 B FAIL；见文首与 §16                               |
+| 方向通过、暂不通过施工评审                                 | **更新**        | 挂点已证，允许拆规格；配方与记忆仍未落地。见文首与 §16                    |
 
 
-Late fusion 与线性 pipeline 仍保留。**探针 B（Messages）已 FAIL：pre-call 改 messages 不到上游。** 在 §5 失败分支的新挂点被证明之前，不拆规格、不写视觉合成。
+Late fusion 与线性 pipeline 仍保留。**剥图挂点是选号后的 `request_kwargs`，不是 pre-call。** 下一步拆规格，再写 MiniMax 翻译；不要倒回 pre-call 剥图。

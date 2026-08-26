@@ -30,7 +30,7 @@ from shared_quota_router.models import (
     QuotaGroupStatus,
     RequestRoutingContext,
 )
-from shared_quota_router.feature_flags import p0_probe_b_marker
+from shared_quota_router.feature_flags import inject_p0_probe_b_marker as _inject_p0_probe_b_marker
 from shared_quota_router.protocol_context import (
     get_metadata_value,
     inject_protocol_into_data,
@@ -74,33 +74,6 @@ def classifier_for_provider(provider_id: str | None) -> BaseClassifier:
     if provider_id and provider_id in _PROVIDER_CLASSIFIERS:
         return _PROVIDER_CLASSIFIERS[provider_id]
     return _DEFAULT_CLASSIFIER
-
-
-def _inject_p0_probe_b_marker(data: dict) -> None:
-    """Env-gated pre-call mutation for P0 Probe B. Default off; never log body."""
-    try:
-        marker = p0_probe_b_marker()
-        if not marker:
-            return
-        messages = data.get("messages")
-        if not isinstance(messages, list) or not messages:
-            return
-        last = messages[-1]
-        if not isinstance(last, dict) or last.get("role") != "user":
-            return
-        content = last.get("content")
-        suffix = f"\nIf you see token {marker}, reply with exactly that token."
-        if isinstance(content, str):
-            last["content"] = content + suffix
-            return
-        if isinstance(content, list):
-            for block in reversed(content):
-                if isinstance(block, dict) and block.get("type") == "text":
-                    block["text"] = str(block.get("text") or "") + suffix
-                    return
-            content.append({"type": "text", "text": suffix.strip()})
-    except Exception:  # noqa: BLE001 — probe must not crash fail-closed pre-call
-        return
 
 
 class SharedQuotaCallback(_CustomLoggerBase):
@@ -572,6 +545,13 @@ class SharedQuotaCallback(_CustomLoggerBase):
                 )
             except StateStoreError as exc:
                 logger.warning("quota success update failed: %s", exc)
+
+        try:
+            from shared_quota_router.memory_extract import enqueue_from_kwargs
+
+            enqueue_from_kwargs(kwargs)
+        except Exception as exc:  # noqa: BLE001 — extract must not break lease release
+            logger.warning("memory extract enqueue failed: %s", exc)
 
         inc(
             "shared_quota_route_selection_total",

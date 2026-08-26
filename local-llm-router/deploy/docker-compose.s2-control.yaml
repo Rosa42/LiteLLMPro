@@ -1,0 +1,7 @@
+# Pair with docker-compose.s2-probe.yaml for the S2 control leg.
+# Mock still reads P0_PROBE_B_MARKER from env_file; LiteLLM inject stays off.
+
+services:
+  litellm:
+    environment:
+      P0_PROBE_B_MARKER: ""

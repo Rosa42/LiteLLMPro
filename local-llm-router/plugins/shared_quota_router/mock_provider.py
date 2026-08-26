@@ -15,6 +15,10 @@ Request path recording (test helpers):
   MockHandler.last_requests — list of {path, method, auth_style, has_tools, stream,
   probe_marker_hit}
   Does not store Authorization values or full prompt bodies.
+
+Probe inspection (S2; no bodies):
+  GET /probe/last   — last record or 404 {empty: true, probe_marker_hit: false}
+  GET /probe/reset  — clear last_requests, 200 {cleared: true}
 """
 
 from __future__ import annotations
@@ -26,6 +30,32 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlparse
+
+_IMAGE_TYPES = frozenset({"image", "image_url"})
+
+
+def _body_has_image(body: dict[str, Any]) -> bool:
+    for msg in body.get("messages") or []:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("type") or "") in _IMAGE_TYPES:
+                return True
+            inner = block.get("content")
+            if str(block.get("type") or "") == "tool_result" and isinstance(
+                inner, list
+            ):
+                if any(
+                    isinstance(b, dict) and str(b.get("type") or "") in _IMAGE_TYPES
+                    for b in inner
+                ):
+                    return True
+    return False
 
 
 def _sse(data: dict[str, Any]) -> bytes:
@@ -73,6 +103,14 @@ class MockHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 blob = ""
             probe_marker_hit = marker in blob
+        has_image = _body_has_image(body)
+        has_gateway_memory = False
+        try:
+            blob = json.dumps(body, ensure_ascii=False)
+        except (TypeError, ValueError):
+            blob = ""
+        if "<gateway_memory>" in blob:
+            has_gateway_memory = True
         MockHandler.last_requests.append(
             {
                 "path": path,
@@ -82,6 +120,8 @@ class MockHandler(BaseHTTPRequestHandler):
                 "has_tools": bool(body.get("tools")),
                 "has_messages": "messages" in body,
                 "has_input": "input" in body,
+                "has_image": has_image,
+                "has_gateway_memory": has_gateway_memory,
                 # Length only — never store body text.
                 "body_keys": sorted(body.keys()),
                 "probe_marker_hit": probe_marker_hit,
@@ -90,6 +130,28 @@ class MockHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path.rstrip("/") in {"/probe/reset", "/v1/probe/reset"}:
+            MockHandler.last_requests.clear()
+            self._json(200, {"cleared": True})
+            return
+        if path.rstrip("/") in {"/probe/last", "/v1/probe/last"}:
+            if not MockHandler.last_requests:
+                self._json(404, {"empty": True, "probe_marker_hit": False})
+                return
+            rec = MockHandler.last_requests[-1]
+            self._json(
+                200,
+                {
+                    "path": rec.get("path"),
+                    "method": rec.get("method"),
+                    "auth_style": rec.get("auth_style"),
+                    "has_messages": bool(rec.get("has_messages")),
+                    "has_image": bool(rec.get("has_image")),
+                    "has_gateway_memory": bool(rec.get("has_gateway_memory")),
+                    "probe_marker_hit": bool(rec.get("probe_marker_hit")),
+                },
+            )
+            return
         if path.startswith("/health"):
             self._json(200, {"status": "ok"})
             return
@@ -220,7 +282,12 @@ class MockHandler(BaseHTTPRequestHandler):
         if stream or scenario in {"stream_ok", "stream_fail_after"}:
             self._stream_messages(model, fail_after=(scenario == "stream_fail_after"))
             return
-        self._json(200, self._ok_messages(model, "hello from mock messages"))
+        text = (
+            "<visual-evidence><pre>mock visual translation</pre></visual-evidence>"
+            if _body_has_image(body)
+            else "hello from mock messages"
+        )
+        self._json(200, self._ok_messages(model, text))
 
     def _ok_completion(self, model: str, text: str) -> dict[str, Any]:
         return {

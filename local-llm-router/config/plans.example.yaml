@@ -24,6 +24,9 @@ plans:
     models:
       - ark-code-latest
       - glm-5.2
+      # Facade on the same Volc quota. Discovery still omits it unless
+      # VISION_COMPOSE_ENABLED=true. Deployment features must not include image.
+      # - glm-5.2-vision
       - glm-latest
       - doubao-seed-2.0-code
       - doubao-seed-2.0-pro
@@ -61,6 +64,12 @@ logical_models:
     public_protocols: [openai_chat]
   glm-5.2:
     public_protocols: [openai_chat]
+  # glm-5.2-vision:  # do not advertise until VISION_COMPOSE_ENABLED and translator work
+  #   public_protocols: [anthropic_messages]
+  #   advertised_features: [text, streaming, tools, reasoning, image]
+  #   compose:
+  #     execute_model: glm-5.2
+  #     translate_model: MiniMax-M3
   glm-latest:
     public_protocols: [openai_chat]
   doubao-seed-2.0-code:

@@ -155,6 +155,14 @@ class ConversionCapability:
 
 
 @dataclass(frozen=True, slots=True)
+class ComposeRecipe:
+    """Vertical compose: translate with one model, execute with another."""
+
+    execute_model: str
+    translate_model: str
+
+
+@dataclass(frozen=True, slots=True)
 class LogicalModelProtocols:
     """Project-owned declaration of which public protocols a logical model opts into.
 
@@ -167,6 +175,8 @@ class LogicalModelProtocols:
     allow_conversion: bool = False
     # allowed directions: (source, target) pairs from conversion_policy.allowed
     allowed_conversions: frozenset[tuple[ApiProtocol, ApiProtocol]] = frozenset()
+    advertised_features: frozenset[Feature] = frozenset()
+    compose: ComposeRecipe | None = None
 
     def supports(self, protocol: ApiProtocol) -> bool:
         return protocol in self.public_protocols
@@ -186,6 +196,8 @@ class LogicalModelProtocols:
         *,
         allow_conversion: bool = False,
         allowed_conversions: Any = None,
+        advertised_features: Any = None,
+        compose: ComposeRecipe | None = None,
     ) -> LogicalModelProtocols:
         if public_protocols is None:
             return cls(
@@ -193,6 +205,8 @@ class LogicalModelProtocols:
                 public_protocols=frozenset(),
                 allow_conversion=False,
                 allowed_conversions=frozenset(),
+                advertised_features=frozenset(),
+                compose=compose,
             )
         if isinstance(public_protocols, (str, bytes)) or not isinstance(
             public_protocols, Iterable
@@ -219,11 +233,17 @@ class LogicalModelProtocols:
                         f"allowed_conversions entry must be (ApiProtocol, ApiProtocol), got {item!r}"
                     )
                 pairs.add(item)
+        try:
+            features = parse_feature_set(advertised_features)
+        except ValueError as exc:
+            raise ValueError(f"advertised_features for {model_group!r}: {exc}") from exc
         return cls(
             model_group=model_group,
             public_protocols=protocols,
             allow_conversion=bool(allow_conversion),
             allowed_conversions=frozenset(pairs),
+            advertised_features=features,
+            compose=compose,
         )
 
 

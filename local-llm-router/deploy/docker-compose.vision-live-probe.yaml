@@ -1,0 +1,59 @@
+# Probe overlay: Volc execute → mock; MiniMax translate → host TLS bridge.
+# Docker Linux cannot TLS to api.minimaxi.com from this network (SSLEOF).
+# Run on the Windows host first:
+#   F:\anaconda\envs\py312\python.exe scripts\minimax_host_bridge.py
+#
+#   docker compose --env-file .env -f deploy/docker-compose.yaml -f deploy/docker-compose.vision-live-probe.yaml --profile core up -d --build
+#
+# Restore production Volc (keep bridge if MiniMax still needs it):
+#   docker compose --env-file .env -f deploy/docker-compose.yaml --profile core up -d --force-recreate --no-deps litellm
+#   docker compose --env-file .env -f deploy/docker-compose.yaml -f deploy/docker-compose.vision-live-probe.yaml --profile core stop mock-s2
+#
+# Do NOT enable S5_STUB_PEEL.
+
+services:
+  mock-s2:
+    profiles: ["core", "full"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.litellm
+      args:
+        LITELLM_VERSION: ${LITELLM_VERSION:-v1.90.5}
+    env_file:
+      - ../.env
+    entrypoint: ["python"]
+    command:
+      - -m
+      - shared_quota_router.mock_provider
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "18080"
+    networks:
+      - internal
+    ports:
+      - "127.0.0.1:18080:18080"
+    restart: "no"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/health', timeout=3)\" || exit 1",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 8s
+
+  litellm:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      VOLC_CODING_ANTHROPIC_BASE_URL: http://mock-s2:18080
+      MINIMAX_ANTHROPIC_BASE_URL: http://host.docker.internal:18443/anthropic
+      GATEWAY_MEMORY_EXTRACT_ENABLED: "true"
+    depends_on:
+      redis:
+        condition: service_healthy
+      mock-s2:
+        condition: service_healthy

@@ -1,0 +1,47 @@
+# Probe-only overlay: S5 composed IMAGE peel → in-network mock.
+# Does not retarget production MiniMax or glm-5.2 api_base.
+# Pair with a temporary glm-5.2-vision entry in config/litellm.yaml (restored after).
+
+services:
+  mock-s2:
+    profiles: ["core", "full"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.litellm
+      args:
+        LITELLM_VERSION: ${LITELLM_VERSION:-v1.90.5}
+    env_file:
+      - ../.env
+    entrypoint: ["python"]
+    command:
+      - -m
+      - shared_quota_router.mock_provider
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "18080"
+    networks:
+      - internal
+    ports:
+      - "127.0.0.1:18080:18080"
+    restart: "no"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/health', timeout=3)\" || exit 1",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 8s
+
+  litellm:
+    environment:
+      S5_COMPOSED_MODELS: glm-5.2-vision
+      S5_STUB_PEEL: "true"
+    depends_on:
+      redis:
+        condition: service_healthy
+      mock-s2:
+        condition: service_healthy

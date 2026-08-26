@@ -1,0 +1,16 @@
+# Optional: MiniMax via host TLS bridge; Volc via extra_hosts (Docker cannot
+# resolve ark.cn-beijing.volces.com — Cloudflare DoH NXDOMAINs it; Aliyun/DNSPod
+# return China A records). Pin may need refresh if Volc VIP moves.
+# MiniMax still needs scripts/minimax_host_bridge.py on 127.0.0.1:18443.
+# Fallback if Docker TLS SSLEOFs again: scripts/volc_host_bridge.py on :18444 and
+# VOLC_CODING_ANTHROPIC_BASE_URL=http://host.docker.internal:18444/api/coding
+#
+#   docker compose --env-file .env -f deploy/docker-compose.yaml -f deploy/docker-compose.minimax-host-bridge.yaml --profile core up -d --force-recreate --no-deps litellm
+
+services:
+  litellm:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "ark.cn-beijing.volces.com:180.184.47.154"
+    environment:
+      MINIMAX_ANTHROPIC_BASE_URL: http://host.docker.internal:18443/anthropic

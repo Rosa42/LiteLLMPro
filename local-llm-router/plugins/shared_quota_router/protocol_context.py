@@ -103,12 +103,32 @@ def extract_protocol_string(request_kwargs: Mapping[str, Any] | None) -> tuple[s
     return None, "none"
 
 
+def _scan_content_features(content: Any, features: set[Feature]) -> None:
+    """Scan Anthropic content blocks, including nested ``tool_result`` (S5 / §7.3.1)."""
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = str(block.get("type") or "")
+        if btype in {"image", "image_url"}:
+            features.add(Feature.IMAGE)
+        elif btype == "thinking":
+            features.add(Feature.REASONING)
+        elif btype == "tool_use":
+            features.add(Feature.TOOLS)
+        elif btype == "tool_result":
+            features.add(Feature.TOOLS)
+            _scan_content_features(block.get("content"), features)
+
+
 def extract_required_features(request_kwargs: Mapping[str, Any] | None) -> frozenset[Feature]:
     """Derive MVP feature requirements from explicit request fields + optional metadata.
 
     Does **not** infer protocol. Streaming/tools come from request kwargs flags.
     Explicit ``required_features`` in metadata (if present) is merged in.
     Content-block types (image/thinking/tool_use/tool_result) are scanned pre-lease (P1-04).
+    ``tool_result.content`` is scanned recursively for nested images (S5 / §7.3.1).
     """
     kwargs = dict(request_kwargs or {})
     features: set[Feature] = {Feature.TEXT}
@@ -125,19 +145,7 @@ def extract_required_features(request_kwargs: Mapping[str, Any] | None) -> froze
     for msg in kwargs.get("messages") or []:
         if not isinstance(msg, dict):
             continue
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            btype = str(block.get("type") or "")
-            if btype in {"image", "image_url"}:
-                features.add(Feature.IMAGE)
-            elif btype == "thinking":
-                features.add(Feature.REASONING)
-            elif btype in {"tool_use", "tool_result"}:
-                features.add(Feature.TOOLS)
+        _scan_content_features(msg.get("content"), features)
 
     # Optional explicit list in either metadata bucket
     raw_list = get_metadata_value(kwargs, FEATURES_META_KEY)

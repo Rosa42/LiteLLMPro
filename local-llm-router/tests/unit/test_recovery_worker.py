@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
-from shared_quota_router.models import Deployment, QuotaGroup, QuotaGroupStatus
+from shared_quota_router.models import ApiProtocol, Deployment, QuotaGroup, QuotaGroupStatus
 from shared_quota_router.recovery_worker import (
     RecoveryWorker,
+    default_http_probe,
     next_probe_delay,
     schedule_next_probe,
 )
@@ -135,3 +137,76 @@ def test_single_probe_lock() -> None:
     worker = RecoveryWorker(store, reg, redis=redis, probe_fn=lambda d: True)
     assert worker.try_acquire_probe_lock("a") is True
     assert worker.try_acquire_probe_lock("a") is False
+
+
+class _FakeResp:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
+def test_anthropic_probe_posts_v1_messages(monkeypatch) -> None:
+    """Anthropic deployments must probe /v1/messages, not Chat completions."""
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(req, timeout=None):  # noqa: ANN001
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        captured["body"] = json.loads(req.data.decode())
+        captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+        return _FakeResp()
+
+    monkeypatch.setattr(
+        "shared_quota_router.recovery_worker.urllib.request.urlopen", fake_urlopen
+    )
+    monkeypatch.setenv("VOLC_CODING_KEY_C", "ark-test")
+    dep = Deployment(
+        deployment_id="volc-c-msg-glm-5.2",
+        model_group="glm-5.2",
+        upstream_model="anthropic/glm-5.2",
+        provider_id="volcengine",
+        quota_group_id="volc-c",
+        api_base="https://ark.example/api/coding",
+        api_key_env="VOLC_CODING_KEY_C",
+        upstream_protocol=ApiProtocol.ANTHROPIC_MESSAGES,
+    )
+    assert default_http_probe(dep) is True
+    assert captured["url"] == "https://ark.example/api/coding/v1/messages"
+    assert captured["method"] == "POST"
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["model"] == "glm-5.2"
+    assert "messages" in body
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers.get("x-api-key") == "ark-test"
+    assert headers.get("anthropic-version") == "2023-06-01"
+
+
+def test_chat_probe_still_posts_chat_completions(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(req, timeout=None):  # noqa: ANN001
+        captured["url"] = req.full_url
+        return _FakeResp()
+
+    monkeypatch.setattr(
+        "shared_quota_router.recovery_worker.urllib.request.urlopen", fake_urlopen
+    )
+    monkeypatch.setenv("OPENCODE_GO_KEY_A", "sk-test")
+    dep = Deployment(
+        deployment_id="opencode-a-chat-kimi-k3",
+        model_group="kimi-k3",
+        upstream_model="openai/kimi-k3",
+        provider_id="opencode-go",
+        quota_group_id="opencode-a",
+        api_base="https://opencode.example/zen/go/v1",
+        api_key_env="OPENCODE_GO_KEY_A",
+        upstream_protocol=ApiProtocol.OPENAI_CHAT,
+    )
+    assert default_http_probe(dep) is True
+    assert captured["url"] == "https://opencode.example/zen/go/v1/chat/completions"

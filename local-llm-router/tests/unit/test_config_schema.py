@@ -356,17 +356,11 @@ def test_repo_plans_yaml_loads() -> None:
     if not path.is_file():
         pytest.skip("config/plans.yaml missing")
     doc = load_plans_file(path)
-    opencode = next(p for p in doc.plans if p.id == "opencode-a-msg")
+    plan_ids = {p.id for p in doc.plans}
+    assert "opencode-a-msg" not in plan_ids
+    assert "opencode-a-chat" not in plan_ids
     volc = next(p for p in doc.plans if p.id == "volc-c-msg")
-    assert opencode.upstream_protocol is ApiProtocol.ANTHROPIC_MESSAGES
     assert volc.upstream_protocol is ApiProtocol.ANTHROPIC_MESSAGES
-    assert opencode.quota_group_id == "opencode-a"
-    assert opencode.supported_features  # anthropic 须显式 features
-    chat = next(p for p in doc.plans if p.id == "opencode-a-chat")
-    assert chat.upstream_protocol is ApiProtocol.OPENAI_CHAT
-    chat_model_names = {m.model for m in chat.models}
-    assert "kimi-k3" in chat_model_names
-    assert "deepseek-v4-flash" not in chat_model_names
     ds_chat = next(p for p in doc.plans if p.id == "deepseek-official-chat")
     ds_msg = next(p for p in doc.plans if p.id == "deepseek-official-msg")
     assert ds_chat.upstream_protocol is ApiProtocol.OPENAI_CHAT
@@ -378,9 +372,14 @@ def test_repo_plans_yaml_loads() -> None:
     newapi = next(p for p in doc.plans if p.id == "newapi-a")
     assert newapi.upstream_protocol is ApiProtocol.ANTHROPIC_MESSAGES
     assert newapi.enabled is True
-    assert public_protocols_for(doc, "kimi-k3") == frozenset(
-        {ApiProtocol.OPENAI_CHAT, ApiProtocol.ANTHROPIC_MESSAGES}
-    )
+    assert newapi.priority == 5
+    assert newapi.quota_group_id == "newapi-a"
+    newapi_models = [m.model for m in newapi.models]
+    assert newapi_models[0] == "claude-opus-5"
+    assert "claude-opus-5" in newapi_models
+    assert newapi.priority < ds_msg.priority
+    assert newapi.priority < ds_chat.priority
+    assert "kimi-k3" not in doc.logical_models
     assert public_protocols_for(doc, "deepseek-v4-flash") == frozenset(
         {ApiProtocol.OPENAI_CHAT, ApiProtocol.ANTHROPIC_MESSAGES}
     )
@@ -389,6 +388,9 @@ def test_repo_plans_yaml_loads() -> None:
     )
     assert doc.logical_models["deepseek-v4-flash"].allow_conversion is False
     assert doc.logical_models["deepseek-v4-pro"].allow_conversion is False
+    assert public_protocols_for(doc, "claude-opus-5") == frozenset(
+        {ApiProtocol.ANTHROPIC_MESSAGES}
+    )
     assert public_protocols_for(doc, "claude-opus-4-8") == frozenset(
         {ApiProtocol.ANTHROPIC_MESSAGES}
     )

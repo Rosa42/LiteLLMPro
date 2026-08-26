@@ -117,9 +117,73 @@ def metrics_raw_labels_allowed() -> bool:
     return _env_bool("SHARED_QUOTA_METRICS_RAW_LABELS", default=False)
 
 
+def is_gateway_enhance_enabled() -> bool:
+    """Master switch for post-select request enhancement. Default off."""
+    return _env_bool("GATEWAY_ENHANCE_ENABLED", default=False)
+
+
+def is_vision_compose_enabled() -> bool:
+    """Vision compose stage. Default off; still requires the master switch."""
+    return _env_bool("VISION_COMPOSE_ENABLED", default=False)
+
+
+def is_gateway_memory_enabled() -> bool:
+    """Memory retrieve stage. Default off; still requires the master switch."""
+    return _env_bool("GATEWAY_MEMORY_ENABLED", default=False)
+
+
+def is_gateway_memory_extract_enabled() -> bool:
+    """Async memory extract. Off unless enhance + memory retrieve + this flag."""
+    return (
+        is_gateway_enhance_enabled()
+        and is_gateway_memory_enabled()
+        and _env_bool("GATEWAY_MEMORY_EXTRACT_ENABLED", default=False)
+    )
+
+
 def p0_probe_b_marker() -> str:
-    """Non-empty => inject this exact token into messages in pre-call. Default empty."""
+    """Non-empty => inject this exact token into messages. Default empty."""
     return (os.environ.get("P0_PROBE_B_MARKER") or "").strip()
+
+
+def inject_p0_probe_b_marker(data: dict | None) -> None:
+    """Env-gated mutation of the last user message. Default off; never log body."""
+    if not isinstance(data, dict):
+        return
+    try:
+        marker = p0_probe_b_marker()
+        if not marker:
+            return
+        messages = data.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return
+        last = messages[-1]
+        if not isinstance(last, dict) or last.get("role") != "user":
+            return
+        content = last.get("content")
+        suffix = f"\nIf you see token {marker}, reply with exactly that token."
+        if isinstance(content, str):
+            last["content"] = content + suffix
+            return
+        if isinstance(content, list):
+            for block in reversed(content):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    block["text"] = str(block.get("text") or "") + suffix
+                    return
+            content.append({"type": "text", "text": suffix.strip()})
+    except Exception:  # noqa: BLE001 — probe must not crash routing
+        return
+
+
+def inject_p0_probe_b_marker_on_select(
+    request_kwargs: dict | None,
+    messages: list | None,
+) -> None:
+    """S1: mutate both kwargs and the named messages list when they differ."""
+    inject_p0_probe_b_marker(request_kwargs)
+    kw_msgs = request_kwargs.get("messages") if isinstance(request_kwargs, dict) else None
+    if messages is not None and messages is not kw_msgs:
+        inject_p0_probe_b_marker({"messages": messages})
 
 
 @lru_cache(maxsize=1)
@@ -135,6 +199,10 @@ def flag_snapshot() -> dict[str, object]:
         "conversion_routing_active": is_conversion_routing_active(),
         "has_metrics_salt": metrics_label_salt() is not None,
         "metrics_raw_labels": metrics_raw_labels_allowed(),
+        "GATEWAY_ENHANCE_ENABLED": is_gateway_enhance_enabled(),
+        "VISION_COMPOSE_ENABLED": is_vision_compose_enabled(),
+        "GATEWAY_MEMORY_ENABLED": is_gateway_memory_enabled(),
+        "GATEWAY_MEMORY_EXTRACT_ENABLED": is_gateway_memory_extract_enabled(),
     }
 
 

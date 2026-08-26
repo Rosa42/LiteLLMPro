@@ -24,6 +24,7 @@ import yaml
 
 from shared_quota_router.models import (
     ApiProtocol,
+    ComposeRecipe,
     ConversionCapability,
     Feature,
     FidelityClass,
@@ -437,6 +438,40 @@ def _parse_allowed_conversion_policy(
     return frozenset(pairs)
 
 
+def _parse_compose_recipe(raw: Any, *, model_group: str) -> ComposeRecipe | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ConfigValidationError(
+            f"logical model {model_group!r}: compose must be a mapping"
+        )
+    execute = str(raw.get("execute_model") or "").strip()
+    translate = str(raw.get("translate_model") or "").strip()
+    if not execute or not translate:
+        raise ConfigValidationError(
+            f"logical model {model_group!r}: compose requires execute_model "
+            f"and translate_model"
+        )
+    if execute == translate:
+        raise ConfigValidationError(
+            f"logical model {model_group!r}: compose.execute_model must differ "
+            f"from compose.translate_model"
+        )
+    return ComposeRecipe(execute_model=execute, translate_model=translate)
+
+
+def _quota_groups_for_model(doc: PlansDocument, model_group: str) -> set[str]:
+    found: set[str] = set()
+    for plan in doc.plans:
+        for m in plan.models:
+            if m.model != model_group:
+                continue
+            if not plan.resolved_enabled(m):
+                continue
+            found.add(plan.quota_group_id)
+    return found
+
+
 def _parse_logical_models(raw: Any) -> dict[str, LogicalModelProtocols]:
     """Parse logical_models map with optional allow_conversion / conversion_policy."""
     if raw is None:
@@ -469,12 +504,16 @@ def _parse_logical_models(raw: Any) -> dict[str, LogicalModelProtocols]:
                 f"logical model {mg!r}: public_protocols must not be an empty list "
                 f"(omit the model or declare at least one protocol)"
             )
+        compose = _parse_compose_recipe((entry or {}).get("compose"), model_group=mg)
+        advertised_raw = (entry or {}).get("advertised_features")
         try:
             lm = LogicalModelProtocols.from_config(
                 mg,
                 public_raw,
                 allow_conversion=allow_conversion,
                 allowed_conversions=allowed,
+                advertised_features=advertised_raw,
+                compose=compose,
             )
         except ValueError as exc:
             raise ConfigValidationError(f"logical model {mg!r}: {exc}") from exc
@@ -647,6 +686,36 @@ def validate_plans_document(doc: PlansDocument) -> None:
                 f"logical model {mg!r} opts into public protocol {proto.value!r} "
                 f"but no enabled direct deployment or explicit conversion route exists"
             )
+
+        if lm.compose is None:
+            continue
+        execute_qgs = _quota_groups_for_model(doc, lm.compose.execute_model)
+        translate_qgs = _quota_groups_for_model(doc, lm.compose.translate_model)
+        if not execute_qgs:
+            raise ConfigValidationError(
+                f"logical model {mg!r}: compose.execute_model "
+                f"{lm.compose.execute_model!r} has no enabled deployment"
+            )
+        if not translate_qgs:
+            raise ConfigValidationError(
+                f"logical model {mg!r}: compose.translate_model "
+                f"{lm.compose.translate_model!r} has no enabled deployment"
+            )
+        overlap = execute_qgs & translate_qgs
+        if overlap:
+            raise ConfigValidationError(
+                f"logical model {mg!r}: compose execute and translate share "
+                f"quota_group_id {sorted(overlap)}"
+            )
+        for plan in doc.plans:
+            for m in plan.models:
+                if m.model != mg or not plan.resolved_enabled(m):
+                    continue
+                if Feature.IMAGE in plan.resolved_features(m):
+                    raise ConfigValidationError(
+                        f"logical model {mg!r}: composed facade must not declare "
+                        f"image on deployment supported_features"
+                    )
 
 
 def load_plans_dict(data: Mapping[str, Any]) -> PlansDocument:

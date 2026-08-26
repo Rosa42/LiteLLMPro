@@ -12,6 +12,8 @@ from typing import Any, Optional, Union
 
 from shared_quota_router.conversion.registry import resolve_route
 from shared_quota_router.feature_flags import (
+    inject_p0_probe_b_marker_on_select,
+    is_gateway_enhance_enabled,
     is_protocol_aware_gateway_enabled,
     is_protocol_conversion_enabled,
 )
@@ -130,12 +132,17 @@ class SharedQuotaSelector:
         conversion_on = (
             is_protocol_aware_gateway_enabled() and is_protocol_conversion_enabled()
         )
+        from shared_quota_router.composed_vision import capability_features
+
+        check_features = capability_features(
+            model_group, protocol_ctx.required_features, logical=lm
+        )
         out: list[RouteCandidate] = []
         for dep in self.registry.get_by_model_group(model_group):
             route = resolve_route(
                 dep,
                 public_protocol=protocol_ctx.protocol,
-                required_features=protocol_ctx.required_features,
+                required_features=check_features,
                 stream=stream,
                 logical=lm,
                 conversion_enabled=conversion_on,
@@ -193,11 +200,14 @@ class SharedQuotaSelector:
             deployments = self.registry.get_by_model_group(model_group)
 
         candidates: list[Deployment] = []
+        skips: list[str] = []
 
         for dep in deployments:
             if not dep.enabled:
+                skips.append(f"{dep.deployment_id}:disabled")
                 continue
             if not context.can_try_quota_group(dep.quota_group_id):
+                skips.append(f"{dep.deployment_id}:already_tried")
                 continue
 
             try:
@@ -211,6 +221,7 @@ class SharedQuotaSelector:
                 ProviderStatus.AVAILABLE,
                 ProviderStatus.DEGRADED,
             }:
+                skips.append(f"{dep.deployment_id}:provider={provider_status.value}")
                 continue
 
             try:
@@ -219,6 +230,7 @@ class SharedQuotaSelector:
                 raise
 
             if quota is not None and quota.status != QuotaGroupStatus.AVAILABLE:
+                skips.append(f"{dep.deployment_id}:quota={quota.status.value}")
                 continue
 
             mode = route_by_dep.get(dep.deployment_id, RouteMode.DIRECT)
@@ -230,6 +242,7 @@ class SharedQuotaSelector:
                 if self.store.is_route_in_cooldown(
                     dep.deployment_id, route_key, now=now
                 ):
+                    skips.append(f"{dep.deployment_id}:route_cooldown")
                     continue
             except StateStoreError:
                 raise
@@ -244,9 +257,25 @@ class SharedQuotaSelector:
 
                 if dep_state is not None and dep_state.is_in_cooldown:
                     if dep_state.cooldown_until is None or dep_state.cooldown_until > now:
+                        skips.append(f"{dep.deployment_id}:deployment_cooldown")
                         continue
 
             candidates.append(dep)
+
+        if not candidates and deployments:
+            logger.warning(
+                "filter_candidates empty model_group=%s request_id=%s first_byte=%s skips=%s",
+                model_group,
+                context.request_id,
+                context.first_byte_sent,
+                skips[:12],
+            )
+        elif not candidates and context.first_byte_sent:
+            logger.warning(
+                "filter_candidates empty model_group=%s request_id=%s first_byte_sent=True",
+                model_group,
+                context.request_id,
+            )
 
         return candidates
 
@@ -598,13 +627,105 @@ class SharedQuotaRoutingStrategy:
         specific_deployment: Optional[bool] = False,
         request_kwargs: Optional[dict] = None,
     ) -> dict[str, Any]:
-        return self.get_available_deployment(
+        result = self.get_available_deployment(
             model=model,
             messages=messages,
             input=input,
             specific_deployment=specific_deployment,
             request_kwargs=request_kwargs,
         )
+        await self._run_enhance_pipeline_after_select(
+            model=model,
+            messages=messages,
+            request_kwargs=request_kwargs,
+            selected=result,
+        )
+        return result
+
+    async def _run_enhance_pipeline_after_select(
+        self,
+        *,
+        model: str,
+        messages: Optional[list[dict[str, str]]],
+        request_kwargs: Optional[dict],
+        selected: dict[str, Any],
+    ) -> None:
+        """Post-select enhance. Does not change Fill First / affinity / lease."""
+        from shared_quota_router.memory_workspace import (
+            collect_request_headers,
+            resolve_workspace,
+        )
+        from shared_quota_router.pipeline import (
+            EnhanceEnvelope,
+            is_internal_call,
+            run_pipeline,
+        )
+
+        if not is_gateway_enhance_enabled() or is_internal_call(request_kwargs):
+            return
+
+        kw = request_kwargs if isinstance(request_kwargs, dict) else {}
+        kw_msgs = kw.get("messages")
+        env_messages: list[Any]
+        if isinstance(kw_msgs, list):
+            env_messages = kw_msgs
+        elif isinstance(messages, list):
+            env_messages = messages
+        else:
+            env_messages = []
+
+        protocol_ctx = resolve_request_protocol_context(request_kwargs)
+        info = selected.get("model_info") if isinstance(selected, dict) else None
+        quota = ""
+        if isinstance(info, dict) and info.get("quota_group_id"):
+            quota = str(info["quota_group_id"])
+
+        headers = collect_request_headers(kw)
+        meta = kw.get("litellm_metadata") if isinstance(kw.get("litellm_metadata"), dict) else None
+        if meta is None and isinstance(kw.get("metadata"), dict):
+            meta = kw["metadata"]
+        workspace = resolve_workspace(
+            headers=headers,
+            metadata=meta,
+            messages=env_messages,
+        )
+        if workspace:
+            for bucket in _metadata_buckets_mutable(request_kwargs):
+                bucket["workspace_root"] = workspace
+
+        def _release_child_lease(quota_group_id: str, request_id: str) -> None:
+            if self.lease_manager is None:
+                return
+            try:
+                self.lease_manager.release(
+                    quota_group_id=quota_group_id,
+                    request_id=request_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — nested lease must not break parent
+                logger.warning("enhance child lease release failed: %s", exc)
+
+        env = EnhanceEnvelope(
+            model_group=model,
+            protocol=protocol_ctx.protocol,
+            streaming=bool(kw.get("stream")),
+            messages=env_messages,
+            workspace=workspace,
+            visual_evidence=[],
+            memory_hits=[],
+            internal_call=False,
+            parent_request_id=resolve_request_id(request_kwargs),
+            parent_quota_group_id=quota,
+            stage_ms={},
+            headers=headers,
+            select_deployment=self.get_available_deployment,
+            release_lease=_release_child_lease,
+        )
+        await run_pipeline(env)
+        if isinstance(request_kwargs, dict):
+            request_kwargs["messages"] = env.messages
+        if messages is not None and messages is not env.messages:
+            messages.clear()
+            messages.extend(env.messages)
 
     def get_available_deployment(
         self,
@@ -763,6 +884,21 @@ class SharedQuotaRoutingStrategy:
                                         release_exc,
                                     )
                             raise
+
+        # S5: composed IMAGE peel after select, before S1 marker inject.
+        from shared_quota_router.composed_vision import peel_composed_images_on_select
+
+        peel_composed_images_on_select(
+            model,
+            request_kwargs,
+            messages,
+            protocol=protocol_ctx.protocol,
+            logical=self.logical_models.get(model),
+        )
+
+        # S1 Probe B remount: after select (and convert, if any) mutate messages
+        # that LiteLLM will send upstream. Env-gated; default off.
+        inject_p0_probe_b_marker_on_select(request_kwargs, messages)
 
         _write_route_meta(
             request_kwargs,

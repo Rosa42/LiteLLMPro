@@ -214,6 +214,16 @@ def _render_logical_models_section(doc: PlansDocument) -> list[str]:
             ):
                 lines.append(f"        - from: {src.value}")
                 lines.append(f"          to: {tgt.value}")
+        if lm.advertised_features:
+            lines.append(
+                f"    advertised_features: {_feature_yaml_list(lm.advertised_features)}"
+            )
+        if lm.compose is not None:
+            lines.append("    compose:")
+            lines.append(f"      execute_model: {ascii_safe(lm.compose.execute_model)}")
+            lines.append(
+                f"      translate_model: {ascii_safe(lm.compose.translate_model)}"
+            )
     lines.append("")
     return lines
 
@@ -240,7 +250,11 @@ def _render_deployment_block(
     if proto is None:
         enabled = False
     public = public_protocols_for(doc, model.model)
-    litellm_model = litellm_model_for_protocol(proto, model_name)
+    lm = doc.logical_models.get(model.model)
+    upstream_name = model_name
+    if lm is not None and lm.compose is not None and lm.compose.execute_model:
+        upstream_name = ascii_safe(lm.compose.execute_model)
+    litellm_model = litellm_model_for_protocol(proto, upstream_name)
 
     block = [
         f"  - model_name: {model_name}",
@@ -259,6 +273,16 @@ def _render_deployment_block(
     block.append(f"      supports_streaming: {'true' if streaming else 'false'}")
     if public:
         block.append(f"      public_protocols: {_protocol_yaml_list(public)}")
+    if lm is not None and lm.advertised_features:
+        block.append(
+            f"      advertised_features: {_feature_yaml_list(lm.advertised_features)}"
+        )
+    if lm is not None and lm.compose is not None:
+        block.append("      compose:")
+        block.append(f"        execute_model: {ascii_safe(lm.compose.execute_model)}")
+        block.append(
+            f"        translate_model: {ascii_safe(lm.compose.translate_model)}"
+        )
     conversions = plan.resolved_conversions(model)
     if conversions:
         block.append("      conversions:")
@@ -282,7 +306,6 @@ def _render_deployment_block(
         ]
     )
     # Responses 公网 + Chat 上游：强制走 chat completions bridge
-    lm = doc.logical_models.get(model.model)
     if (
         proto is ApiProtocol.OPENAI_CHAT
         and lm is not None

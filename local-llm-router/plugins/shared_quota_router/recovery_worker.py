@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from shared_quota_router.metrics import inc
-from shared_quota_router.models import Deployment, QuotaGroup, QuotaGroupStatus
+from shared_quota_router.models import ApiProtocol, Deployment, QuotaGroup, QuotaGroupStatus
 from shared_quota_router.registry import DeploymentRegistry
 from shared_quota_router.state_store import StateStore, StateStoreError
 
@@ -213,23 +213,37 @@ def default_http_probe(deployment: Deployment) -> bool:
         logger.warning("probe skip: no api key for %s", deployment.deployment_id)
         return False
 
-    url = base.rstrip("/") + "/chat/completions"
-    # upstream_model may be openai/kimi-k3
     model = deployment.upstream_model.split("/")[-1]
-    body = json.dumps(
-        {
+    base_n = base.rstrip("/")
+    if deployment.upstream_protocol is ApiProtocol.ANTHROPIC_MESSAGES:
+        url = f"{base_n}/messages" if base_n.endswith("/v1") else f"{base_n}/v1/messages"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        }
+        payload: dict[str, Any] = {
+            "model": model,
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": PROBE_PROMPT}],
+        }
+    else:
+        url = f"{base_n}/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        payload = {
             "model": model,
             "messages": [{"role": "user", "content": PROBE_PROMPT}],
             "max_tokens": 1,
         }
-    ).encode()
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(
         url,
         data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
+        headers=headers,
         method="POST",
     )
     try:

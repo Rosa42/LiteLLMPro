@@ -292,11 +292,14 @@ def test_apply_plans_to_litellm_repo(tmp_path: Path) -> None:
     text = out.read_text(encoding="ascii")
     assert "upstream_protocol: anthropic_messages" in text
     assert "public_protocols: [anthropic_messages]" in text
-    assert "quota_group_id: opencode-a" in text
-    assert "os.environ/OPENCODE_GO_KEY_A" in text
+    assert "quota_group_id: opencode-a" not in text
+    assert "os.environ/OPENCODE_GO_KEY_A" not in text
     assert "os.environ/VOLC_CODING_KEY_C" in text
-    # NewAPI present and enabled (Anthropic Messages)
+    assert "os.environ/PLAN_NEWAPI_A_API_KEY" in text
+    assert "quota_group_id: newapi-a" in text
+    assert "claude-opus-5" in text
     assert "claude-opus-4-8" in text
+    assert "kimi-k3" not in text
     assert "enabled: true" in text
     assert meta["plans"] >= 3
 

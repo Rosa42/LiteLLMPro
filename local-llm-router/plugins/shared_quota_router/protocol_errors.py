@@ -49,6 +49,12 @@ class ProtocolAwareRoutingError(NoAvailableDeploymentError):
     def message(self) -> str:
         return self._wire_message
 
+    @message.setter
+    def message(self, value: str) -> None:
+        # LiteLLM exception mapping assigns e.message; property must be settable.
+        self._wire_message = str(value)
+        super().__init__(self._wire_message)
+
     @property
     def status_code(self) -> int:
         """协议门控失败固定 400（禁止落成 500）。"""
@@ -90,6 +96,7 @@ class ProtocolAwareRoutingError(NoAvailableDeploymentError):
                     "reason": self.reason.value,
                     "protocol": self.protocol.value if self.protocol else None,
                     "model_group": self.model_group,
+                    "details": self.details,
                 },
             }
         }
@@ -109,6 +116,7 @@ class ProtocolAwareRoutingError(NoAvailableDeploymentError):
                     "reason": self.reason.value,
                     "protocol": self.protocol.value if self.protocol else None,
                     "model_group": self.model_group,
+                    "details": self.details,
                 },
             },
         }

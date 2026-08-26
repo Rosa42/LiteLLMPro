@@ -1,0 +1,17 @@
+[
+  {
+    "id": "term-001",
+    "expect_carrier": "pre",
+    "notes": "Python traceback in a terminal"
+  },
+  {
+    "id": "table-001",
+    "expect_carrier": "table",
+    "notes": "Two-column settings table"
+  },
+  {
+    "id": "reject-001",
+    "expect_carrier": "reject",
+    "notes": "Out-of-scope landscape placeholder"
+  }
+]

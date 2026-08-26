@@ -5,27 +5,135 @@
 
 model_list:
 
-  # --- OpenCode Go A (Messages) (quota_group: opencode-a, priority: 10) ---
-  - model_name: glm-5.2
+  # --- NewAPI A (liuhe.cloud) (quota_group: newapi-a, priority: 5) ---
+  - model_name: claude-opus-5
     model_info:
-      deployment_id: opencode-a-msg-glm-5.2
-      provider_id: opencode-go
-      account_id: opencode-a
-      quota_group_id: opencode-a
-      priority: 10
+      deployment_id: newapi-a-claude-opus-5
+      provider_id: newapi
+      account_id: newapi-a
+      quota_group_id: newapi-a
+      priority: 5
       enabled: true
       upstream_protocol: anthropic_messages
-      supported_features: [text]
-      supports_streaming: false
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
       public_protocols: [anthropic_messages]
     litellm_params:
-      model: anthropic/glm-5.2
-      api_base: os.environ/OPENCODE_GO_ANTHROPIC_BASE_URL
-      api_key: os.environ/OPENCODE_GO_KEY_A
+      model: anthropic/claude-opus-5
+      api_base: os.environ/PLAN_NEWAPI_A_BASE_URL
+      api_key: os.environ/PLAN_NEWAPI_A_API_KEY
+      timeout: 300
+
+  - model_name: claude-opus-4-8
+    model_info:
+      deployment_id: newapi-a-claude-opus-4-8
+      provider_id: newapi
+      account_id: newapi-a
+      quota_group_id: newapi-a
+      priority: 5
+      enabled: true
+      upstream_protocol: anthropic_messages
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
+      public_protocols: [anthropic_messages]
+    litellm_params:
+      model: anthropic/claude-opus-4-8
+      api_base: os.environ/PLAN_NEWAPI_A_BASE_URL
+      api_key: os.environ/PLAN_NEWAPI_A_API_KEY
+      timeout: 300
+
+  - model_name: claude-opus-4-7
+    model_info:
+      deployment_id: newapi-a-claude-opus-4-7
+      provider_id: newapi
+      account_id: newapi-a
+      quota_group_id: newapi-a
+      priority: 5
+      enabled: true
+      upstream_protocol: anthropic_messages
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
+      public_protocols: [anthropic_messages]
+    litellm_params:
+      model: anthropic/claude-opus-4-7
+      api_base: os.environ/PLAN_NEWAPI_A_BASE_URL
+      api_key: os.environ/PLAN_NEWAPI_A_API_KEY
+      timeout: 300
+
+  - model_name: claude-opus-4-6
+    model_info:
+      deployment_id: newapi-a-claude-opus-4-6
+      provider_id: newapi
+      account_id: newapi-a
+      quota_group_id: newapi-a
+      priority: 5
+      enabled: true
+      upstream_protocol: anthropic_messages
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
+      public_protocols: [anthropic_messages]
+    litellm_params:
+      model: anthropic/claude-opus-4-6
+      api_base: os.environ/PLAN_NEWAPI_A_BASE_URL
+      api_key: os.environ/PLAN_NEWAPI_A_API_KEY
+      timeout: 300
+
+  - model_name: claude-sonnet-5
+    model_info:
+      deployment_id: newapi-a-claude-sonnet-5
+      provider_id: newapi
+      account_id: newapi-a
+      quota_group_id: newapi-a
+      priority: 5
+      enabled: true
+      upstream_protocol: anthropic_messages
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
+      public_protocols: [anthropic_messages]
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_base: os.environ/PLAN_NEWAPI_A_BASE_URL
+      api_key: os.environ/PLAN_NEWAPI_A_API_KEY
+      timeout: 300
+
+  - model_name: claude-sonnet-4-6
+    model_info:
+      deployment_id: newapi-a-claude-sonnet-4-6
+      provider_id: newapi
+      account_id: newapi-a
+      quota_group_id: newapi-a
+      priority: 5
+      enabled: true
+      upstream_protocol: anthropic_messages
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
+      public_protocols: [anthropic_messages]
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_base: os.environ/PLAN_NEWAPI_A_BASE_URL
+      api_key: os.environ/PLAN_NEWAPI_A_API_KEY
       timeout: 300
 
 
   # --- Volc Coding Plan C (Messages) (quota_group: volc-c, priority: 20) ---
+  - model_name: glm-5.3
+    model_info:
+      deployment_id: volc-c-msg-glm-5.3
+      provider_id: volcengine
+      account_id: volc-c
+      quota_group_id: volc-c
+      priority: 20
+      enabled: true
+      upstream_protocol: anthropic_messages
+      supported_features: [text, streaming, tools, reasoning]
+      supports_streaming: true
+      public_protocols: [anthropic_messages]
+    litellm_params:
+      model: anthropic/glm-5.3
+      api_base: os.environ/VOLC_CODING_ANTHROPIC_BASE_URL
+      api_key: os.environ/VOLC_CODING_KEY_C
+      timeout: 300
+
   - model_name: glm-5.2
     model_info:
       deployment_id: volc-c-msg-glm-5.2
@@ -44,24 +152,26 @@ model_list:
       api_key: os.environ/VOLC_CODING_KEY_C
       timeout: 300
 
-
-  # --- NewAPI A (quota_group: newapi-a, priority: 30) ---
-  - model_name: claude-opus-4-8
+  - model_name: glm-5.2-vision
     model_info:
-      deployment_id: newapi-a-claude-opus-4-8
-      provider_id: newapi
-      account_id: newapi-a
-      quota_group_id: newapi-a
-      priority: 30
+      deployment_id: volc-c-msg-glm-5.2-vision
+      provider_id: volcengine
+      account_id: volc-c
+      quota_group_id: volc-c
+      priority: 20
       enabled: true
       upstream_protocol: anthropic_messages
       supported_features: [text, streaming, tools, reasoning]
       supports_streaming: true
       public_protocols: [anthropic_messages]
+      advertised_features: [text, streaming, tools, reasoning, image]
+      compose:
+        execute_model: glm-5.2
+        translate_model: MiniMax-M3
     litellm_params:
-      model: anthropic/claude-opus-4-8
-      api_base: os.environ/PLAN_NEWAPI_A_BASE_URL
-      api_key: os.environ/PLAN_NEWAPI_A_API_KEY
+      model: anthropic/glm-5.2
+      api_base: os.environ/VOLC_CODING_ANTHROPIC_BASE_URL
+      api_key: os.environ/VOLC_CODING_KEY_C
       timeout: 300
 
 
@@ -215,34 +325,6 @@ model_list:
       timeout: 300
 
 
-  # --- OpenCode Go A (Chat) (quota_group: opencode-a, priority: 10) ---
-  - model_name: kimi-k3
-    model_info:
-      deployment_id: opencode-a-chat-kimi-k3
-      provider_id: opencode-go
-      account_id: opencode-a
-      quota_group_id: opencode-a
-      priority: 10
-      enabled: true
-      upstream_protocol: openai_chat
-      supported_features: [text, streaming]
-      supports_streaming: true
-      public_protocols: [openai_chat, anthropic_messages]
-      conversions:
-        - from: anthropic_messages
-          to: openai_chat
-          fidelity: lossy_safe
-          streaming: false
-          features:
-            request: [text]
-            response: [text]
-    litellm_params:
-      model: openai/kimi-k3
-      api_base: os.environ/OPENCODE_GO_BASE_URL
-      api_key: os.environ/OPENCODE_GO_KEY_A
-      timeout: 300
-
-
 router_settings:
   routing_strategy: simple-shuffle
   num_retries: 2
@@ -263,7 +345,7 @@ litellm_settings:
   # G0-Native: Messages + openai/ -> chat completions URL (not Responses API).
   # P1-SOT: true only when CLI --enable-messages-chat-native AND convert policy.
   # Staging conversion still needs PROTOCOL_* flags. Env is not production SoT.
-  use_chat_completions_url_for_anthropic_messages: true
+  use_chat_completions_url_for_anthropic_messages: false
 
 # Runtime policy (ignored by LiteLLM core; consumed by shared_quota_router)
 shared_quota_logical_models:
@@ -279,7 +361,22 @@ shared_quota_logical_models:
   MiniMax-M3:
     public_protocols: [anthropic_messages]
     allow_conversion: false
+  claude-opus-4-6:
+    public_protocols: [anthropic_messages]
+    allow_conversion: false
+  claude-opus-4-7:
+    public_protocols: [anthropic_messages]
+    allow_conversion: false
   claude-opus-4-8:
+    public_protocols: [anthropic_messages]
+    allow_conversion: false
+  claude-opus-5:
+    public_protocols: [anthropic_messages]
+    allow_conversion: false
+  claude-sonnet-4-6:
+    public_protocols: [anthropic_messages]
+    allow_conversion: false
+  claude-sonnet-5:
     public_protocols: [anthropic_messages]
     allow_conversion: false
   deepseek-v4-flash:
@@ -291,10 +388,13 @@ shared_quota_logical_models:
   glm-5.2:
     public_protocols: [anthropic_messages]
     allow_conversion: false
-  kimi-k3:
-    public_protocols: [anthropic_messages, openai_chat]
-    allow_conversion: true
-    conversion_policy:
-      allowed:
-        - from: anthropic_messages
-          to: openai_chat
+  glm-5.2-vision:
+    public_protocols: [anthropic_messages]
+    allow_conversion: false
+    advertised_features: [text, streaming, tools, reasoning, image]
+    compose:
+      execute_model: glm-5.2
+      translate_model: MiniMax-M3
+  glm-5.3:
+    public_protocols: [anthropic_messages]
+    allow_conversion: false

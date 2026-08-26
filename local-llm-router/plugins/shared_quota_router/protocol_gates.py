@@ -318,11 +318,17 @@ def assert_required_features(
 
     stream = Feature.STREAMING in required_features
     lm_map = logical_models if logical_models is not None else resolve_runtime_logical_models()
+    from shared_quota_router.composed_vision import capability_features
+
+    logical = lm_map.get(model_group) if lm_map else None
+    check_features = capability_features(
+        model_group, required_features, logical=logical
+    )
     if public_reachable(
         model_group=model_group,
         protocol=protocol,
         registry=registry,
-        required_features=required_features,
+        required_features=check_features,
         stream=stream,
         logical_models=lm_map,
     ):

@@ -1,0 +1,53 @@
+# Probe-only overlay: MiniMax Anthropic traffic → in-network mock.
+# Do not use as a production compose file.
+#
+# From local-llm-router:
+#   docker compose --env-file .env -f deploy/docker-compose.yaml -f deploy/docker-compose.s2-probe.yaml --profile core up -d --build mock-s2
+#   docker compose --env-file .env -f deploy/docker-compose.yaml -f deploy/docker-compose.s2-probe.yaml --profile core up -d --force-recreate --no-deps litellm
+#
+# Restore MiniMax (drop this overlay):
+#   docker compose --env-file .env -f deploy/docker-compose.yaml --profile core up -d --force-recreate --no-deps litellm
+#   docker compose --env-file .env -f deploy/docker-compose.yaml -f deploy/docker-compose.s2-probe.yaml --profile core stop mock-s2
+
+services:
+  mock-s2:
+    profiles: ["core", "full"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.litellm
+      args:
+        LITELLM_VERSION: ${LITELLM_VERSION:-v1.90.5}
+    env_file:
+      - ../.env
+    entrypoint: ["python"]
+    command:
+      - -m
+      - shared_quota_router.mock_provider
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "18080"
+    networks:
+      - internal
+    ports:
+      - "127.0.0.1:18080:18080"
+    restart: "no"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:18080/health', timeout=3)\" || exit 1",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 8s
+
+  litellm:
+    environment:
+      MINIMAX_ANTHROPIC_BASE_URL: http://mock-s2:18080
+    depends_on:
+      redis:
+        condition: service_healthy
+      mock-s2:
+        condition: service_healthy

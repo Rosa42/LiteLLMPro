@@ -22,10 +22,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
+from shared_quota_router.feature_flags import is_vision_compose_enabled
 from shared_quota_router.models import (
     ApiProtocol,
+    Feature,
     LogicalModelProtocols,
     parse_api_protocol,
+    parse_feature_set,
 )
 
 _DISCLAIMER = (
@@ -33,6 +36,28 @@ _DISCLAIMER = (
     "It does not prove that a matching deployment is currently available, "
     "healthy, or that a given endpoint will accept the request."
 )
+
+_FEATURE_ORDER = (
+    Feature.TEXT,
+    Feature.STREAMING,
+    Feature.TOOLS,
+    Feature.REASONING,
+    Feature.IMAGE,
+)
+
+
+def _ordered_feature_values(features: Iterable[Feature]) -> list[str]:
+    seen = set(features)
+    out = [f.value for f in _FEATURE_ORDER if f in seen]
+    for f in sorted(seen, key=lambda x: x.value):
+        if f.value not in out:
+            out.append(f.value)
+    return out
+
+
+def _should_omit_compose_facade(*, has_compose: bool) -> bool:
+    return has_compose and not is_vision_compose_enabled()
+
 
 # Stable protocol order for serialisation
 _PROTOCOL_ORDER = (
@@ -78,23 +103,30 @@ class ModelCapability:
 
     model_group: str
     public_protocols: frozenset[ApiProtocol] = frozenset()
+    advertised_features: frozenset[Feature] = frozenset()
 
     def to_openai_style_dict(self) -> dict[str, Any]:
         """OpenAI-ish model object with metadata.public_protocols only."""
+        metadata: dict[str, Any] = {
+            "public_protocols": _ordered_protocol_values(self.public_protocols),
+        }
+        if self.advertised_features:
+            metadata["features"] = _ordered_feature_values(self.advertised_features)
         return {
             "id": self.model_group,
             "object": "model",
-            "metadata": {
-                "public_protocols": _ordered_protocol_values(self.public_protocols),
-            },
+            "metadata": metadata,
         }
 
     def to_capability_dict(self) -> dict[str, Any]:
-        return {
+        body: dict[str, Any] = {
             "id": self.model_group,
             "object": "model_capability",
             "public_protocols": _ordered_protocol_values(self.public_protocols),
         }
+        if self.advertised_features:
+            body["features"] = _ordered_feature_values(self.advertised_features)
+        return body
 
 
 @dataclass(slots=True)
@@ -135,6 +167,8 @@ def catalog_from_model_list(model_list: Sequence[Mapping[str, Any]]) -> Capabili
     Does not invent protocols from provider or model name.
     """
     by_group: dict[str, set[ApiProtocol]] = {}
+    by_features: dict[str, set[Feature]] = {}
+    compose_groups: set[str] = set()
     order: list[str] = []
 
     for entry in model_list:
@@ -152,16 +186,33 @@ def catalog_from_model_list(model_list: Sequence[Mapping[str, Any]]) -> Capabili
         protocols = _parse_public_protocols_field(info.get("public_protocols"))
         if model_group not in by_group:
             by_group[model_group] = set()
+            by_features[model_group] = set()
             order.append(model_group)
         by_group[model_group] |= set(protocols)
+        try:
+            by_features[model_group] |= set(
+                parse_feature_set(info.get("advertised_features"))
+            )
+        except ValueError:
+            pass
+        if info.get("compose"):
+            compose_groups.add(model_group)
 
     models: list[ModelCapability] = []
     for mg in order:
+        if _should_omit_compose_facade(has_compose=mg in compose_groups):
+            continue
         protos = frozenset(by_group.get(mg) or ())
         if not protos:
             # No public opt-in ⇒ unavailable everywhere; omit from discovery
             continue
-        models.append(ModelCapability(model_group=mg, public_protocols=protos))
+        models.append(
+            ModelCapability(
+                model_group=mg,
+                public_protocols=protos,
+                advertised_features=frozenset(by_features.get(mg) or ()),
+            )
+        )
     return CapabilityCatalog(models=models)
 
 
@@ -174,10 +225,13 @@ def catalog_from_logical_models(
         lm = logical_models[mg]
         if not lm.public_protocols:
             continue
+        if _should_omit_compose_facade(has_compose=lm.compose is not None):
+            continue
         models.append(
             ModelCapability(
                 model_group=lm.model_group,
                 public_protocols=frozenset(lm.public_protocols),
+                advertised_features=frozenset(lm.advertised_features),
             )
         )
     return CapabilityCatalog(models=models)
