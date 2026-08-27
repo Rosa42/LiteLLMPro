@@ -627,20 +627,29 @@ class SharedQuotaRoutingStrategy:
         specific_deployment: Optional[bool] = False,
         request_kwargs: Optional[dict] = None,
     ) -> dict[str, Any]:
-        result = self.get_available_deployment(
-            model=model,
-            messages=messages,
-            input=input,
-            specific_deployment=specific_deployment,
-            request_kwargs=request_kwargs,
+        from shared_quota_router.vision_async_flag import (
+            mark_async_select,
+            reset_async_select,
         )
-        await self._run_enhance_pipeline_after_select(
-            model=model,
-            messages=messages,
-            request_kwargs=request_kwargs,
-            selected=result,
-        )
-        return result
+
+        token = mark_async_select()
+        try:
+            result = self.get_available_deployment(
+                model=model,
+                messages=messages,
+                input=input,
+                specific_deployment=specific_deployment,
+                request_kwargs=request_kwargs,
+            )
+            await self._run_enhance_pipeline_after_select(
+                model=model,
+                messages=messages,
+                request_kwargs=request_kwargs,
+                selected=result,
+            )
+            return result
+        finally:
+            reset_async_select(token)
 
     async def _run_enhance_pipeline_after_select(
         self,

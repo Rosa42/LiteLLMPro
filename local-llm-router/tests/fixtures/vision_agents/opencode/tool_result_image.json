@@ -1,0 +1,55 @@
+{
+  "provenance": {
+    "kind": "opencode-protocol-recording",
+    "source": "https://github.com/anomalyco/opencode/blob/dev/packages/llm/test/fixtures/recordings/anthropic-messages/anthropic-opus-4-7-image-tool-result.json",
+    "recorded_at": "2026-05-22T01:57:05.693Z",
+    "live_gateway": false
+  },
+  "notes": "Image bytes replaced with a 1x1 PNG. Recording headers had no User-Agent; that is a recording artifact, not proof OpenCode omits UA on the wire.",
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Use the read_screenshot tool, then reply with the words shown."
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call_screenshot_1",
+          "name": "read_screenshot",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_screenshot_1",
+          "content": [
+            {"type": "text", "text": "Image read successfully"},
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "headers": {
+    "content-type": "application/json",
+    "user-agent": "opencode/1.18.5 ai-sdk/provider-utils/4.0.27 runtime/bun/1.3.14",
+    "anthropic-version": "2023-06-01",
+    "x-session-affinity": "ses_redacted",
+    "x-session-id": "ses_redacted",
+    "accept": "*/*",
+    "host": "127.0.0.1:4000"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Generate a title for this conversation:\n",
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Called the Read tool with the following input: {\"filePath\":\"[path]\\\\AppData\\\\Local\\\\Temp\\\\opencode-vision-capture\\\\shot.png\"}"
+        },
+        {
+          "type": "text",
+          "text": "Image read successfully"
+        },
+        {
+          "type": "image",
+          "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+          }
+        },
+        {
+          "type": "text",
+          "text": "\"Do not use tools. Reply with exactly: pong\"",
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ]
+    }
+  ],
+  "provenance": {
+    "kind": "live-gateway",
+    "live_gateway": true,
+    "source": "opencode_gateway_tap",
+    "path": "/v1/messages",
+    "model": "glm-5.2",
+    "seq": 1
+  }
+}

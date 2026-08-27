@@ -168,16 +168,19 @@ def test_enhance_flags_default_false_in_snapshot() -> None:
         is_gateway_enhance_enabled,
         is_gateway_memory_enabled,
         is_gateway_memory_extract_enabled,
+        is_vision_agent_fingerprints_enabled,
         is_vision_compose_enabled,
     )
 
     snap = flag_snapshot()
     assert is_gateway_enhance_enabled() is False
     assert is_vision_compose_enabled() is False
+    assert is_vision_agent_fingerprints_enabled() is True
     assert is_gateway_memory_enabled() is False
     assert is_gateway_memory_extract_enabled() is False
     assert snap["GATEWAY_ENHANCE_ENABLED"] is False
     assert snap["VISION_COMPOSE_ENABLED"] is False
+    assert snap["VISION_AGENT_FINGERPRINTS"] is True
     assert snap["GATEWAY_MEMORY_ENABLED"] is False
     assert snap["GATEWAY_MEMORY_EXTRACT_ENABLED"] is False
 

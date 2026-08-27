@@ -277,3 +277,64 @@ def test_mock_record_has_image_without_storing_bytes(
         {"messages": [{"role": "user", "content": "pong"}]},
     )
     assert MockHandler.last_requests[-1]["has_image"] is False
+
+
+def test_sync_select_fail_closed_when_vision_compose_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("S5_COMPOSED_MODELS", COMPOSED)
+    monkeypatch.setenv("GATEWAY_ENHANCE_ENABLED", "true")
+    monkeypatch.setenv("VISION_COMPOSE_ENABLED", "true")
+    monkeypatch.delenv("S5_STUB_PEEL", raising=False)
+    clear_flag_cache()
+    kwargs = {
+        "litellm_metadata": {"protocol": "anthropic_messages"},
+        "messages": _image_messages(),
+    }
+    named = _image_messages()
+    strat = _strategy_for(COMPOSED)
+    with pytest.raises(ProtocolAwareRoutingError) as ei:
+        strat.get_available_deployment(
+            model=COMPOSED,
+            messages=named,
+            request_kwargs=kwargs,
+        )
+    assert ei.value.reason is ProtocolRoutingReason.FEATURE_UNSUPPORTED
+    assert ei.value.details.get("vision") == "sync_path"
+    types = [b.get("type") for b in named[0]["content"] if isinstance(b, dict)]
+    assert "image" in types
+
+
+@pytest.mark.asyncio
+async def test_async_select_defers_peel_when_vision_compose_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("S5_COMPOSED_MODELS", COMPOSED)
+    monkeypatch.setenv("GATEWAY_ENHANCE_ENABLED", "true")
+    monkeypatch.setenv("VISION_COMPOSE_ENABLED", "true")
+    monkeypatch.delenv("S5_STUB_PEEL", raising=False)
+    clear_flag_cache()
+    seen: list[str] = []
+
+    async def spy(env) -> None:
+        seen.append(env.model_group)
+        from shared_quota_router.composed_vision import peel_messages
+
+        peel_messages(env.messages, "<visual-evidence><pre>x</pre></visual-evidence>")
+
+    monkeypatch.setattr("shared_quota_router.pipeline.run_pipeline", spy)
+    kwargs = {
+        "litellm_metadata": {"protocol": "anthropic_messages"},
+        "messages": _image_messages(),
+        "litellm_call_id": "async-vision",
+    }
+    named = _image_messages()
+    strat = _strategy_for(COMPOSED)
+    await strat.async_get_available_deployment(
+        model=COMPOSED,
+        messages=named,
+        request_kwargs=kwargs,
+    )
+    assert seen == [COMPOSED]
+    types = [b.get("type") for b in kwargs["messages"][0]["content"] if isinstance(b, dict)]
+    assert "image" not in types

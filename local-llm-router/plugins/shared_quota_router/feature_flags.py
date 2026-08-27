@@ -127,6 +127,11 @@ def is_vision_compose_enabled() -> bool:
     return _env_bool("VISION_COMPOSE_ENABLED", default=False)
 
 
+def is_vision_agent_fingerprints_enabled() -> bool:
+    """OpenCode ``match_messages`` fingerprints. Default on after live capture."""
+    return _env_bool("VISION_AGENT_FINGERPRINTS", default=True)
+
+
 def is_gateway_memory_enabled() -> bool:
     """Memory retrieve stage. Default off; still requires the master switch."""
     return _env_bool("GATEWAY_MEMORY_ENABLED", default=False)
@@ -201,6 +206,7 @@ def flag_snapshot() -> dict[str, object]:
         "metrics_raw_labels": metrics_raw_labels_allowed(),
         "GATEWAY_ENHANCE_ENABLED": is_gateway_enhance_enabled(),
         "VISION_COMPOSE_ENABLED": is_vision_compose_enabled(),
+        "VISION_AGENT_FINGERPRINTS": is_vision_agent_fingerprints_enabled(),
         "GATEWAY_MEMORY_ENABLED": is_gateway_memory_enabled(),
         "GATEWAY_MEMORY_EXTRACT_ENABLED": is_gateway_memory_extract_enabled(),
     }

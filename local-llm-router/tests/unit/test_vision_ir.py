@@ -26,6 +26,32 @@ def test_rejects_script() -> None:
         validate_visual_evidence(ir)
 
 
+def test_remaps_status_bar_to_div() -> None:
+    ir = (
+        "<visual-evidence><status-bar>Ready</status-bar>"
+        "<p>README.md</p></visual-evidence>"
+    )
+    out = validate_visual_evidence(ir)
+    assert "<status-bar>" not in out
+    assert "Ready" in out
+    assert "README.md" in out
+    assert "<div>" in out
+
+
+def test_drops_unknown_attributes_on_allowed_tags() -> None:
+    ir = '<visual-evidence><p class="x" data-file="README.md">hi</p></visual-evidence>'
+    out = validate_visual_evidence(ir)
+    assert "class=" not in out
+    assert 'data-file="README.md"' in out
+    assert "hi" in out
+
+
+def test_still_rejects_javascript_href() -> None:
+    ir = '<visual-evidence><div href="javascript:alert(1)">x</div></visual-evidence>'
+    with pytest.raises(ProtocolAwareRoutingError):
+        validate_visual_evidence(ir)
+
+
 def test_rejects_html_document() -> None:
     ir = "<html><visual-evidence><p>x</p></visual-evidence></html>"
     with pytest.raises(ProtocolAwareRoutingError):
@@ -34,14 +60,17 @@ def test_rejects_html_document() -> None:
 
 def test_rejects_empty_shell() -> None:
     ir = "<visual-evidence></visual-evidence>"
-    with pytest.raises(ProtocolAwareRoutingError):
+    with pytest.raises(ProtocolAwareRoutingError) as ei:
         validate_visual_evidence(ir)
+    assert ei.value.details.get("vision") == "empty_or_reject"
 
 
 def test_rejects_out_of_scope() -> None:
     ir = '<visual-evidence data-reject="out-of-scope"></visual-evidence>'
-    with pytest.raises(ProtocolAwareRoutingError):
+    with pytest.raises(ProtocolAwareRoutingError) as ei:
         validate_visual_evidence(ir)
+    assert ei.value.details.get("vision") == "rejected_scope"
+    assert "coding screenshot" in ei.value.message.lower()
 
 
 def test_rejects_mostly_uncertain() -> None:

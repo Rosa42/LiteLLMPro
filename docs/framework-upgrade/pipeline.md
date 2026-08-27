@@ -112,12 +112,15 @@ class Stage(Protocol):
 
 生产 LiteLLM proxy 走 async 路径。
 
-Sync 路径遇到「合成模型 + 有图 + `VISION_COMPOSE_ENABLED`」且需要真实翻译：
+`async_get_available_deployment` **先调用**同步 `get_available_deployment`，因此不能在同步函数里无条件「有图就 400」（会误伤生产 async）。用进程内 `contextvars.ContextVar`（建议名 `sq_vision_async_select`）区分调用方。详见 `vision-agent-prompt-presets.md` §4.1。
 
-- 若缓存已命中且可同步读文件：允许在 sync 路径用缓存结果剥图（无网络）。
-- 否则：`ProtocolAwareRoutingError`，`reason=FEATURE_UNSUPPORTED` 或 `CONFIGURATION_INVALID`，消息说明必须走 async 路径。单测用 `env.translator` / 依赖注入在 **async** 测试里覆盖翻译。
+Sync 路径遇到「合成模型 + 有图 + `VISION_COMPOSE_ENABLED`」：
 
-F1 实现时：async 在 select 之后调用 `run_pipeline`；vision/memory stage 可为 no-op（空列表或 enabled=false）。**不要**在 F1 删除 S5 `peel_composed_images_on_select`。有图合成模型在翻译器挂上之前仍走 S5（stub 关 ⇒ fail-closed）。
+- **公开** sync 入口（Var 为 false）：立刻 `FEATURE_UNSUPPORTED`，`details.vision=sync_path`。V1 **不做**同步读缓存剥图。
+- **async 入口内部**的 sync select（Var 为 true）：跳过剥图，由随后的 vision stage 翻译。
+- 视觉关：保持 S5（stub 关 ⇒ fail-closed；stub 开仅探针）。
+
+单测用 `env.translator` / 依赖注入在 **async** 测试里覆盖翻译。禁止在同步 `get_available_deployment` 里打 MiniMax HTTP。
 
 ---
 

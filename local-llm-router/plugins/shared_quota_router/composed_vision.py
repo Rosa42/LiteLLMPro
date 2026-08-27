@@ -125,10 +125,27 @@ def peel_composed_images_on_select(
 ) -> None:
     """After account select: strip images on composed models, or fail closed.
 
-    When the vision compose stage is enabled, peel is skipped here so the
-    pipeline can translate. ``S5_STUB_PEEL`` is ignored in that mode.
+    Vision compose translates on the async hang-point. Public sync select must
+    not leak pixels to the execute model. ``S5_STUB_PEEL`` is ignored when
+    vision compose is on.
     """
     if is_gateway_enhance_enabled() and is_vision_compose_enabled():
+        from shared_quota_router.vision_async_flag import is_async_select
+
+        if is_async_select():
+            return
+        if not defers_image_gate(model_group, logical):
+            return
+        kw_msgs = request_kwargs.get("messages") if isinstance(request_kwargs, dict) else None
+        if messages_have_image(kw_msgs) or messages_have_image(messages):
+            raise ProtocolAwareRoutingError(
+                f"composed model {model_group!r} cannot translate images on the "
+                "sync select path; use async_get_available_deployment",
+                reason=ProtocolRoutingReason.FEATURE_UNSUPPORTED,
+                protocol=protocol or ApiProtocol.ANTHROPIC_MESSAGES,
+                model_group=model_group,
+                details={"vision": "sync_path"},
+            )
         return
     if not defers_image_gate(model_group, logical):
         return

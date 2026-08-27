@@ -7,7 +7,12 @@ echo   Stopping LiteLLMPro services...
 echo   (litellm + redis + quota-worker)
 echo.
 
-docker compose --env-file .env -f deploy/docker-compose.yaml --profile core down 2>&1
+set "COMPOSE=docker compose --env-file .env -f deploy/docker-compose.yaml"
+if exist deploy/docker-compose.minimax-host-bridge.yaml (
+  set "COMPOSE=%COMPOSE% -f deploy/docker-compose.minimax-host-bridge.yaml"
+)
+
+%COMPOSE% --profile core down 2>&1
 
 if %errorlevel% equ 0 (
     echo.

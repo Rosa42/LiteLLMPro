@@ -1,0 +1,14 @@
+{
+  "provenance": {
+    "kind": "derived-from-opencode-source",
+    "source": "https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/llm/request.ts",
+    "code_path": "LLMRequestPrep.prepare non-opencode provider branch",
+    "live_gateway": false
+  },
+  "notes": "Intended headers for custom providers such as this LiteLLM hop. Live proxy_server_request has not been captured yet; LiteLLM may drop x-session-* . Do not fingerprint on session ids.",
+  "headers": {
+    "user-agent": "opencode/1.2.3",
+    "x-session-id": "ses_redacted",
+    "x-session-affinity": "ses_redacted"
+  }
+}

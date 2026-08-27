@@ -3,6 +3,11 @@ setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 title LiteLLMPro - Starting
 
+set "COMPOSE=docker compose --env-file .env -f deploy\docker-compose.yaml"
+if exist deploy\docker-compose.minimax-host-bridge.yaml (
+  set "COMPOSE=!COMPOSE! -f deploy\docker-compose.minimax-host-bridge.yaml"
+)
+
 echo.
 echo ============================================================
 echo   LiteLLMPro Local LLM Router
@@ -19,7 +24,7 @@ if errorlevel 1 goto :failed
 echo [3/4] Starting Docker services...
 echo        First-time image builds may take several minutes.
 echo.
-docker compose --env-file .env -f deploy\docker-compose.yaml --profile core up -d --build
+%COMPOSE% --profile core up -d --build
 if errorlevel 1 (
     echo.
     echo [ERROR] Docker Compose failed. Review the output above.
@@ -37,8 +42,8 @@ echo   API Key : LITELLM_MASTER_KEY from .env
 echo ============================================================
 echo.
 echo Commands:
-echo   Logs  : docker compose --env-file .env -f deploy\docker-compose.yaml --profile core logs -f litellm
-echo   Status: docker compose --env-file .env -f deploy\docker-compose.yaml --profile core ps
+echo   Logs  : %COMPOSE% --profile core logs -f litellm
+echo   Status: %COMPOSE% --profile core ps
 echo   Stop  : stop-liteLLMPro.bat
 echo.
 title LiteLLMPro - Running
@@ -121,22 +126,32 @@ if not errorlevel 1 (
     exit /b 0
 )
 
-docker compose --env-file .env -f deploy\docker-compose.yaml --profile core ps -a 2>nul | findstr /I "unhealthy exited" >nul
+rem Only core services. Orphan mock-s2 in Exited state must not fail startup.
+%COMPOSE% --profile core ps -a litellm redis quota-worker 2>nul | findstr /I "unhealthy" >nul
 if not errorlevel 1 (
-    echo [ERROR] One or more services stopped or became unhealthy.
-    docker compose --env-file .env -f deploy\docker-compose.yaml --profile core ps -a
+    echo [ERROR] One or more core services became unhealthy.
+    %COMPOSE% --profile core ps -a litellm redis quota-worker
     echo.
     echo Recent LiteLLM logs:
-    docker compose --env-file .env -f deploy\docker-compose.yaml --profile core logs --tail 30 litellm
+    %COMPOSE% --profile core logs --tail 30 litellm
+    exit /b 1
+)
+%COMPOSE% --profile core ps -a litellm redis quota-worker 2>nul | findstr /I " Exited " >nul
+if not errorlevel 1 (
+    echo [ERROR] One or more core services exited.
+    %COMPOSE% --profile core ps -a litellm redis quota-worker
+    echo.
+    echo Recent LiteLLM logs:
+    %COMPOSE% --profile core logs --tail 30 litellm
     exit /b 1
 )
 
 if !proxy_waited! geq 180 (
     echo [ERROR] LiteLLMPro did not become healthy within 180 seconds.
-    docker compose --env-file .env -f deploy\docker-compose.yaml --profile core ps -a
+    %COMPOSE% --profile core ps -a litellm redis quota-worker
     echo.
     echo Recent LiteLLM logs:
-    docker compose --env-file .env -f deploy\docker-compose.yaml --profile core logs --tail 30 litellm
+    %COMPOSE% --profile core logs --tail 30 litellm
     exit /b 1
 )
 
