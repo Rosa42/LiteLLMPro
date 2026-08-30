@@ -160,6 +160,7 @@ class ComposeRecipe:
 
     execute_model: str
     translate_model: str
+    template: str = "vision"
 
 
 @dataclass(frozen=True, slots=True)

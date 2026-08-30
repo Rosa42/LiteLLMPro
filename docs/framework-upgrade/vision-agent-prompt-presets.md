@@ -275,7 +275,7 @@ user   = [image_block, {"type":"text","text": _translate_user_text(guide)}]
 | `pipeline.py` 或小模块 `vision_async_flag.py` | `ContextVar`；async 入口 set/reset |
 | `composed_vision.py` | peel：async-select 则 defer；否则有图则 400 |
 | `vision_compose.py` | 快照、逐图、`translator(png, guide)`、digest；调用 `resolve_preset` |
-| `vision_cache.py` | `SCHEMA_VER = 3` |
+| `vision_cache.py` | `SCHEMA_VER = 4` |
 | `vision_agents/types.py` | `ImageRef`、Protocol |
 | `vision_agents/generic.py` | fallback 预设 |
 | `vision_agents/opencode.py` | 头/UA 匹配 + 抽取 + 附言；`match_messages` return False |
@@ -328,7 +328,7 @@ A 可以先在 `vision_compose.py` 内把 digest/translator/sync 修好，B 再�
 
 1. `ContextVar` + 同步 fail-closed + 改写现有 peel 单测。
 2. 改写前快照、逐图 guide、`translator(png, guide)`。
-3. digest 含 `agent_id`+`prompt_rev`+guide；`SCHEMA_VER=3`。
+3. digest 含 `agent_id`+`prompt_rev`+guide+`translate_model`+`compose_rev`；`SCHEMA_VER=4`。
 4. 契约：sync 400；async 无残留 image。
 
 ### B — 预设骨架（不写指纹）

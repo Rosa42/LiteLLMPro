@@ -49,3 +49,10 @@
 - 分阶段方案：`../docs/分阶段开发方案.md`
 - Task 拆解：`../docs/tasks/阶段1-9-任务拆解.md`
 - 框架升级（流水线 / 视觉合成 / 记忆）：`../docs/framework-upgrade/`
+- **增强层维护（切视觉槽位 / flag / 回滚）：** `../docs/framework-upgrade/maintenance.md`
+
+## 请求增强（视觉配方）
+
+23. 视觉门面 CRUD **只在宿主机**（`compose-vision-*` / `cli_config`）。禁止容器内 PUT 或手改 volume 里的 YAML 当正式流程。
+24. 子选号只走进程内 ContextVar `sq_trusted_internal`。禁止用客户端 metadata `internal_call` 跳过 public opt-in 或增强流水线。
+25. 译图失败 400，**禁止**自动换执行模型 / pipeline fallback。V1 **禁止** rethink。

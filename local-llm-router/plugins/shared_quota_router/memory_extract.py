@@ -19,10 +19,14 @@ from shared_quota_router.anthropic_direct import (
     upstream_model_name,
 )
 from shared_quota_router.feature_flags import is_gateway_memory_extract_enabled
-from shared_quota_router.internal_call import assert_quota_exclusive, child_request_id
+from shared_quota_router.internal_call import (
+    assert_quota_exclusive,
+    child_request_id,
+    is_trusted_internal,
+    select_internal_deployment,
+)
 from shared_quota_router.memory_store import append_entry
-from shared_quota_router.models import ApiProtocol
-from shared_quota_router.pipeline import is_internal_call
+from shared_quota_router.models import ApiProtocol, Feature
 from shared_quota_router.protocol_errors import ProtocolAwareRoutingError
 
 logger = logging.getLogger(__name__)
@@ -130,7 +134,7 @@ def enqueue_from_kwargs(kwargs: dict[str, Any] | None) -> bool:
     """Synchronous enqueue only. Never call an upstream model here."""
     if not isinstance(kwargs, dict):
         return False
-    if is_internal_call(kwargs):
+    if is_trusted_internal() or kwargs.get("_sq_nested_child"):
         return False
     from shared_quota_router.protocol_context import get_metadata_value
 
@@ -216,26 +220,18 @@ async def _extract_with_model(job: dict[str, Any]) -> bool:
     if select is None:
         return False
     child_id = child_request_id(parent_id, "memory-extract", uuid.uuid4().hex)
-    child_kwargs = {
-        "litellm_call_id": child_id,
-        "messages": [{"role": "user", "content": user_text[:4000]}],
-        "litellm_metadata": {
-            "protocol": ApiProtocol.ANTHROPIC_MESSAGES.value,
-            "internal_call": True,
-            "internal_kind": "memory-extract",
-        },
-        "metadata": {
-            "protocol": ApiProtocol.ANTHROPIC_MESSAGES.value,
-            "internal_call": True,
-            "internal_kind": "memory-extract",
-        },
-    }
     child_qg = ""
     try:
-        entry = select(
+        entry = select_internal_deployment(
             model,
-            messages=child_kwargs["messages"],
-            request_kwargs=child_kwargs,
+            select=select,
+            protocol=ApiProtocol.ANTHROPIC_MESSAGES,
+            required_features=frozenset({Feature.TEXT}),
+            parent_request_id=parent_id,
+            parent_quota_group_id=parent_qg,
+            child_id=child_id,
+            messages=[{"role": "user", "content": user_text[:4000]}],
+            kind="memory-extract",
         )
         if not isinstance(entry, dict):
             return False

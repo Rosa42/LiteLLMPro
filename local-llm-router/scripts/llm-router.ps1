@@ -12,7 +12,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet("init", "start", "stop", "restart", "status", "apply", "add-plan", "set-env", "smoke", "help")]
+  [ValidateSet("init", "start", "stop", "restart", "status", "apply", "add-plan", "set-env", "smoke", "help", "compose-vision-slots", "compose-vision-add", "compose-vision-update", "compose-vision-remove")]
   [string]$Command = "help",
 
   [string]$Id,
@@ -27,7 +27,10 @@ param(
 
   [string]$Model = "glm-5.2",
   [string]$Prompt = "ping",
-  [switch]$NoOpenCodeEnv
+  [switch]$NoOpenCodeEnv,
+  [string]$Execute,
+  [string]$Vision,
+  [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
@@ -361,6 +364,43 @@ function Invoke-Apply {
   Write-Info "After .env / plans change: run restart"
 }
 
+function Invoke-ComposeVision {
+  param([string]$Action)
+  if (-not (Test-Path $Paths.Plans)) {
+    throw "Missing config/plans.yaml. Run init or copy plans.example.yaml."
+  }
+  $py = Get-PythonExe
+  $env:PYTHONPATH = ((Join-Path $Root "plugins") + ";" + $env:PYTHONPATH)
+  $env:PYTHONUTF8 = "1"
+  $args = @(
+    "-m", "shared_quota_router.cli_config", $Action,
+    "--plans", $Paths.Plans
+  )
+  if ($Action -eq "compose-vision-slots") {
+    if ($Execute) { $args += @("--execute", $Execute) }
+  } else {
+    if (-not $Id) { throw "$Action requires -Id (facade logical model name)" }
+    $args += @(
+      "--output", $Paths.LiteLLM,
+      "--backup-dir", (Join-Path $Root "config\backups"),
+      "--id", $Id
+    )
+    if ($Action -ne "compose-vision-remove") {
+      if (-not $Execute) { throw "$Action requires -Execute" }
+      if (-not $Vision) { throw "$Action requires -Vision" }
+      $args += @("--execute", $Execute, "--vision", $Vision)
+    }
+    if ($Force) { $args += "--force" }
+  }
+  & $py @args
+  if ($LASTEXITCODE -ne 0) {
+    throw "$Action failed"
+  }
+  if ($Action -ne "compose-vision-slots") {
+    Write-Info "Recreate the litellm container to load the new facade (yaml-only: no --build)"
+  }
+}
+
 function Invoke-AddPlan {
   if (-not $Id) { throw "add-plan requires -Id (e.g. volc-d)" }
   if (-not $BaseUrl) { throw "add-plan requires -BaseUrl" }
@@ -660,7 +700,16 @@ Commands:
   restart    stop then start
   status     Health + model list
   smoke      One test chat completion
+  compose-vision-slots   List execute / translate candidates
+  compose-vision-add     Create a vision facade (execute + MiniMax-M3 or other IMAGE model)
+  compose-vision-update  Switch slots (preset glm-5.2-vision needs -Force)
+  compose-vision-remove  Delete a custom vision facade
   help       This help
+
+Switch glm-5.2-vision execute model to glm-5.3, keep MiniMax-M3 translator:
+  .\scripts\llm-router.ps1 compose-vision-update ``
+    -Id glm-5.2-vision -Execute glm-5.3 -Vision MiniMax-M3 -Force
+  Then recreate the litellm container.
 
 Add a new plan:
   .\scripts\llm-router.ps1 add-plan ``
@@ -696,6 +745,10 @@ switch ($Command) {
   "restart"  { Invoke-Stop; Start-Sleep 1; Invoke-Start }
   "status"   { Invoke-Status }
   "smoke"    { Invoke-Smoke }
+  "compose-vision-slots"  { Invoke-ComposeVision -Action "compose-vision-slots" }
+  "compose-vision-add"    { Invoke-ComposeVision -Action "compose-vision-add" }
+  "compose-vision-update" { Invoke-ComposeVision -Action "compose-vision-update" }
+  "compose-vision-remove" { Invoke-ComposeVision -Action "compose-vision-remove" }
   "set-env"  {
     if (-not $Id -or -not $BaseUrl -or -not $ApiKey) {
       throw "set-env needs -Id -BaseUrl -ApiKey"

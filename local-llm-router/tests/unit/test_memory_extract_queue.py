@@ -136,3 +136,47 @@ async def test_extract_http_failure_does_not_write(tmp_path, monkeypatch) -> Non
     )
     assert await process_next_job() is False
     assert load_entries(ws) == []
+
+
+@pytest.mark.asyncio
+async def test_extract_select_uses_trusted_internal(tmp_path, monkeypatch) -> None:
+    from shared_quota_router.internal_call import is_trusted_internal
+    from shared_quota_router.memory_extract import process_next_job
+
+    monkeypatch.setenv("GATEWAY_ENHANCE_ENABLED", "true")
+    monkeypatch.setenv("GATEWAY_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("GATEWAY_MEMORY_EXTRACT_ENABLED", "true")
+    monkeypatch.setenv("GATEWAY_MEMORY_DIR", str(tmp_path))
+    monkeypatch.setenv("GATEWAY_MEMORY_EXTRACT_MODEL", "MiniMax-M2.5")
+    clear_flag_cache()
+    ws = str(tmp_path.resolve())
+    seen: list[bool] = []
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("upstream down")
+
+    def select(model, **_kwargs):
+        seen.append(is_trusted_internal())
+        return {
+            "model_name": model,
+            "model_info": {"quota_group_id": "minimax-official"},
+            "litellm_params": {
+                "model": "anthropic/MiniMax-M2.5",
+                "api_base": "https://api.minimaxi.com/anthropic",
+                "api_key": "secret",
+            },
+        }
+
+    assert enqueue_from_kwargs(
+        {
+            "litellm_call_id": "parent-3",
+            "litellm_metadata": {"workspace_root": ws, "quota_group_id": "volc-c"},
+            "model_info": {"quota_group_id": "volc-c"},
+            "messages": [{"role": "user", "content": "we decided to pin LiteLLM"}],
+            "_sq_select_deployment": select,
+            "_sq_http_post": boom,
+        }
+    )
+    await process_next_job()
+    assert seen == [True]
+    assert is_trusted_internal() is False

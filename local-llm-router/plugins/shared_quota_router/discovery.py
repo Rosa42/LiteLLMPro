@@ -22,7 +22,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
-from shared_quota_router.feature_flags import is_vision_compose_enabled
+from shared_quota_router.feature_flags import (
+    is_gateway_enhance_enabled,
+    is_vision_compose_enabled,
+)
 from shared_quota_router.models import (
     ApiProtocol,
     Feature,
@@ -56,7 +59,9 @@ def _ordered_feature_values(features: Iterable[Feature]) -> list[str]:
 
 
 def _should_omit_compose_facade(*, has_compose: bool) -> bool:
-    return has_compose and not is_vision_compose_enabled()
+    if not has_compose:
+        return False
+    return not (is_gateway_enhance_enabled() and is_vision_compose_enabled())
 
 
 # Stable protocol order for serialisation

@@ -3,11 +3,11 @@
 | 项 | 值 |
 | --- | --- |
 | 文档类型 | 规格（spec） |
-| 状态 | **可施工** |
-| 日期 | 2026-08-25 |
+| 状态 | **已落地**（视觉模板 V1 + 可配置槽位） |
+| 日期 | 2026-08-30 |
 | 实现落点 | `vision_compose.py` / `vision_ir.py` / `vision_cache.py` / `internal_call.py` |
 | 公开协议 | **仅** `anthropic_messages`（Q6） |
-| 依据 | `design-proposal.md` §7；计划冻结项 |
+| 依据 | `design-proposal.md` §7；计划冻结项。槽位可配置见 `specs/2026-08-28-composable-recipes-design.md`（V1 修订稿） |
 
 V1 只做 coding agent 截图。风景、人像、手写、过糊图必须拒绝翻译（fail-closed），禁止占位 caption。
 
@@ -20,8 +20,8 @@ V1 只做 coding agent 截图。风景、人像、手写、过糊图必须拒绝
 | 对外逻辑模型 | `glm-5.2-vision` |
 | `public_protocols` | `[anthropic_messages]` |
 | `advertised_features` | `[text, streaming, tools, reasoning, image]` |
-| 执行模型 | `glm-5.2`（现有 Volc Messages 部署与额度组） |
-| 翻译模型 | `MiniMax-M3`（`quota_group_id=minimax-official`） |
+| 执行模型 | 该门面 `compose.execute_model`（预置 `glm-5.2-vision` = `glm-5.2`，现有 Volc Messages 部署与额度组） |
+| 翻译模型 | 该门面 `compose.translate_model`（预置 = `MiniMax-M3`，`quota_group_id=minimax-official`） |
 | 触发 | Messages 含 `image` / `image_url` block（含历史与 `tool_result` 内嵌） |
 | 无图 | 跳过 MiniMax；effective 仍是该合成部署上的 GLM 账号 |
 
@@ -44,12 +44,13 @@ logical_models:
 
 规则：
 
-- `compose` 非空 ⇒ `defer_image_gate=true`。保留 env `S5_COMPOSED_MODELS` 作探针覆盖。
+- `is_vision_compose`（`compose.template` 为 `vision` 或旧 YAML 缺省）⇒ `defer_image_gate=true`。**禁止**用「`compose` 非空」当作视觉。保留 env `S5_COMPOSED_MODELS` 作探针覆盖。
 - 合成部署 **不得** 在 `supported_features` 声明 `image`（执行模型吃不到像素）。
 - 纯 `glm-5.2` **不得** 声明 `image`。
-- `execute_model` 与 `translate_model` 必须是已存在的逻辑模型，且所属 `quota_group_id` **不同**。`apply` 时 `ConfigValidationError`。
-- 不在 select 时把 `model` 字符串 remap 成 `glm-5.2`；选号对象就是 `glm-5.2-vision` 的部署（与 glm-5.2 同额度组）。
-- `VISION_COMPOSE_ENABLED=false` 时 discovery **省略** 一切带 `compose` 的模型。生产广告只在翻译器可跑之后打开。
+- `execute_model` 与 `translate_model` 必须在 enabled plan 上有部署，且所属 `quota_group_id` **不同**。不要求它们自己 public opt-in。`apply` 时 `ConfigValidationError`。
+- 不在 select 时把 `model` 字符串 remap 成执行模型名；选号对象就是门面自己的部署（与 reasoning 同额度组）。
+- `VISION_COMPOSE_ENABLED=false` 时 discovery **省略视觉模板**门面。生产广告只在翻译器可跑之后打开。门面仍须同时写在 `plans[].models` 与 `logical_models`（见可配置配方规格 §3 / §6）。
+- V1 无配方级 fallback；译图失败不换执行模型。
 
 ---
 
@@ -62,7 +63,7 @@ logical_models:
 对每一张图：
 
 1. 取出原始字节（base64 decode；失败则 fail-closed）。
-2. 用该图已算出的 `guide`、当前 `agent_id`、`prompt_rev` 做 digest（§4）。
+2. 用该图已算出的 `guide`、当前 `agent_id`、`prompt_rev`、**`translate_model`（及配方修订）** 做 digest（§4）。
 3. 查缓存 `vision:{schema_ver}:{digest}`。命中则跳过 MiniMax。
 4. 未命中则调翻译子调用 `translator(png, guide)` → 质量门 → 写入缓存。
 5. 将该 block **类型改为 `text`**，`text` 为译文（可外包一层说明，见 §6）。不得残留 `image` / `image_url`。
@@ -88,8 +89,8 @@ logical_models:
 
 - 目录：`GATEWAY_VISION_CACHE_DIR`，默认 `local-llm-router/data/vision-cache/`（已 gitignore 的 `data/`）。
 - 文件名：`{schema_ver}_{sha256}.txt`（或等价，一文件一篇译文）。
-- `schema_ver`：整数常量。IR 白名单不兼容时 +1。当前 **3**（digest 含 `agent_id` + `prompt_rev` + 逐图 guide；相对 v2 的 `sha256(png||guide)` 不兼容）。
-- digest 公式见 `vision-agent-prompt-presets.md` §4.3。预设文案变更靠 `prompt_rev`，不必每次加 `schema_ver`。
+- `schema_ver`：整数常量。IR 白名单或 digest 输入不兼容时 +1。可配置配方落地时必须 **+1（3→4）**，digest 增加 `translate_model` + 配方修订，避免换译图槽位仍命中旧 IR。
+- digest 公式见 `vision-agent-prompt-presets.md` §4.3，并叠加 translator 身份（见 `specs/2026-08-28-composable-recipes-design.md` §8.3）。预设文案变更靠 `prompt_rev`。
 - 不写入 Redis `sq:*`。
 - put/get 必须同一 `schema_ver` 才命中。
 
@@ -180,7 +181,7 @@ Unreadable glyphs: wrap in <span data-uncertain="1">...</span>. Do not guess.
 
 `translator` 签名为 `(png, guide)`。禁止在 HTTP POST 时从已改写的 `env.messages` 重抽 guide。
 
-缓存 digest 为 `sha256(png ‖ agent_id ‖ prompt_rev ‖ guide)`（`schema_ver` 3）。同一张图、不同用户问题或不同预设不得命中旧译文。
+缓存 digest 为 `sha256(png ‖ agent_id ‖ prompt_rev ‖ guide ‖ translate_model ‖ compose_rev)`（`schema_ver` 4，配方可配置后）。同一张图、不同用户问题、不同预设或不同译图模型不得命中旧译文。
 
 
 ---
@@ -189,15 +190,17 @@ Unreadable glyphs: wrap in <span data-uncertain="1">...</span>. Do not guess.
 
 | 项 | V1 |
 | --- | --- |
-| 标记 | metadata / `litellm_metadata`：`internal_call=true`，`internal_kind=vision` |
-| 递归 | 已是 internal 的请求禁止再跑 pipeline |
-| 深度 | 1 |
+| 标记 | **仅**进程内 ContextVar `sq_trusted_internal`（见可配置配方规格 §8.1）。禁止用客户端可写的 metadata `internal_call` 作为选号或跳过 pipeline 的依据 |
+| 递归 | ContextVar 为真的选号禁止再跑 pipeline |
+| 深度 | 1；槽位不得指向任何 compose 门面 |
 | 子 id | `{parent}#vision:{hash8}`，`hash8` 为图片 sha256 前 8 位 |
 | Context | 独立 `RequestRoutingContext`；禁止复用父 ctx |
-| HTTP | `httpx.AsyncClient` POST 到所选 MiniMax deployment 的 Anthropic Messages URL（与探针 A 一致：基址无尾 `/v1` 则自行拼 `/v1/messages`） |
-| 选号 | 对 `MiniMax-M3` 调现有 `get_available_deployment`（子 request_id）。子调用不设置 async-select ContextVar；无图时 peel 为空操作 |
-| quota | 子 `quota_group_id` ≠ 父执行组，否则 `CONFIGURATION_INVALID` |
-| 失败 | 走现有分类器；M3 耗尽只写 M3 组 |
+| HTTP | `httpx.AsyncClient` POST 到所选 translator deployment 的 Anthropic Messages URL（基址无尾 `/v1` 则拼 `/v1/messages`） |
+| 选号 | `select_internal_deployment(translate_model, protocol=messages, required_features={text,image})`。只绕过 public opt-in；仍过滤协议、IMAGE、额度状态。不设置 async-select Var |
+| 上报 | HTTP 结束后、释 child lease 前调用 `report_internal_outcome`（原始 status / 异常 / deployment meta），进入与 `on_success`/`on_failure` 同一 classifier |
+| quota | 子 `quota_group_id` ≠ 父执行组，否则 `CONFIGURATION_INVALID`。额度组来自 eligible Messages+IMAGE 路由 |
+| 父 lease | 每张图译完 renew；门面 timeout ≥ 6×60+120 |
+| 失败 | 先上报分类器（429/401 计入冷却与耗尽），再对用户映射 `FEATURE_UNSUPPORTED`。Translator 耗尽只写该 translator 的 `(model, qg)` |
 
 不要用 `litellm.acompletion` 从策略内部再绕本机代理。
 
@@ -207,7 +210,7 @@ Unreadable glyphs: wrap in <span data-uncertain="1">...</span>. Do not guess.
 
 ## 9. 模块熔断
 
-进程内计数：连续翻译失败（超时、上游 5xx、质量门失败、超限以外的翻译错误）达到 **3** 次后，打开熔断 **60 秒**。窗口内合成模型带图直接 `FEATURE_UNSUPPORTED`（消息：vision composer temporarily unavailable），**禁止** stub 译文。成功一次则清零。超限（张数/字节）不计入熔断（那是请求错误）。
+按 `(translate_model, quota_group_id)` 分桶计数：连续翻译失败（超时、上游 4xx/5xx 已上报后、质量门失败）达到 **3** 次后，该桶打开熔断 **60 秒**。窗口内使用**同一桶**的合成请求带图直接 `FEATURE_UNSUPPORTED`（vision composer temporarily unavailable），**禁止** stub 译文，也 **禁止** 一个桶打开后挡住其它 translator / 其它额度组。成功一次则清零该桶。超限（张数/字节）与 `rejected_scope` 不计入熔断。
 
 ---
 
@@ -245,9 +248,13 @@ Live：操作者准备 ≥20 张真实 coding 截图于 `raw/`（不提交 PII�
 
 ## 12. 验收
 
-- [ ] 出发 HTTP 无 image（含 `tool_result`）
-- [ ] 同一 sha256 第二轮不调 MiniMax
-- [ ] 纯 `glm-5.2` 带图仍 400
-- [ ] `VISION_COMPOSE_ENABLED` 时忽略 `S5_STUB_PEEL`
-- [ ] 质量门失败无占位 caption
-- [ ] M3 耗尽不把 Volc 组标 `SHARED_QUOTA_EXHAUSTED`
+编码侧（unit/contract，2026-08-30）：
+
+- [x] 出发 HTTP 无 image（含 `tool_result`）
+- [x] 同一 sha256 第二轮不调 MiniMax
+- [x] 纯 `glm-5.2` 带图仍 400
+- [x] `VISION_COMPOSE_ENABLED` 时忽略 `S5_STUB_PEEL`
+- [x] 质量门失败无占位 caption
+- [x] M3 耗尽不把 Volc 组标 `SHARED_QUOTA_EXHAUSTED`（子调用 outcome + 分桶熔断）
+
+操作者现网切槽位 / 带图抽查见 [`maintenance.md`](./maintenance.md)。

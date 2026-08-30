@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-SCHEMA_VER = 3
+SCHEMA_VER = 4
 
 _CACHE_NAME = "vision-cache"
 

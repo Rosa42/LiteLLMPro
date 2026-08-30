@@ -17,7 +17,8 @@ from shared_quota_router.feature_flags import (
     is_protocol_aware_gateway_enabled,
     is_protocol_conversion_enabled,
 )
-from shared_quota_router.lease import LeaseManager
+from shared_quota_router.internal_call import is_trusted_internal
+from shared_quota_router.lease import LeaseManager, lease_ttl_seconds
 from shared_quota_router.models import (
     ApiProtocol,
     Deployment,
@@ -561,17 +562,22 @@ def model_list_to_registry(model_list: list[dict[str, Any]]) -> DeploymentRegist
 def find_model_entry(
     model_list: list[dict[str, Any]], deployment: Deployment
 ) -> dict[str, Any] | None:
+    by_id: dict[str, Any] | None = None
+    by_base: dict[str, Any] | None = None
     for entry in model_list:
         info = entry.get("model_info") or {}
         dep_id = info.get("deployment_id") or info.get("id")
         if dep_id == deployment.deployment_id:
-            return entry
-        # Fallback: match model_name + api_key env fingerprint
-        if entry.get("model_name") == deployment.model_group:
+            by_id = entry
+            break
+        if (
+            by_base is None
+            and entry.get("model_name") == deployment.model_group
+        ):
             params = entry.get("litellm_params") or {}
             if deployment.api_base and params.get("api_base") == deployment.api_base:
-                return entry
-    return None
+                by_base = entry
+    return by_id or by_base
 
 
 class SharedQuotaRoutingStrategy:
@@ -666,11 +672,10 @@ class SharedQuotaRoutingStrategy:
         )
         from shared_quota_router.pipeline import (
             EnhanceEnvelope,
-            is_internal_call,
             run_pipeline,
         )
 
-        if not is_gateway_enhance_enabled() or is_internal_call(request_kwargs):
+        if not is_gateway_enhance_enabled() or is_trusted_internal():
             return
 
         kw = request_kwargs if isinstance(request_kwargs, dict) else {}
@@ -713,6 +718,38 @@ class SharedQuotaRoutingStrategy:
             except Exception as exc:  # noqa: BLE001 — nested lease must not break parent
                 logger.warning("enhance child lease release failed: %s", exc)
 
+        def _renew_parent_lease(
+            quota_group_id: str, request_id: str, ttl_seconds: int = 0
+        ) -> None:
+            if self.lease_manager is None:
+                return
+            ttl = int(ttl_seconds) if ttl_seconds else lease_ttl_seconds(480)
+            try:
+                self.lease_manager.renew(
+                    quota_group_id=quota_group_id,
+                    request_id=request_id,
+                    ttl_seconds=ttl,
+                )
+            except Exception as exc:  # noqa: BLE001 — parent renew must not break translate
+                logger.warning("enhance parent lease renew failed: %s", exc)
+
+        def _report_outcome(
+            kwargs: dict[str, Any],
+            *,
+            success: bool,
+            status_code: int | None = None,
+            exception: BaseException | None = None,
+            **_extra: Any,
+        ) -> None:
+            from shared_quota_router.internal_call import report_internal_outcome
+
+            report_internal_outcome(
+                kwargs,
+                success=success,
+                status_code=status_code,
+                exception=exception,
+            )
+
         env = EnhanceEnvelope(
             model_group=model,
             protocol=protocol_ctx.protocol,
@@ -728,6 +765,8 @@ class SharedQuotaRoutingStrategy:
             headers=headers,
             select_deployment=self.get_available_deployment,
             release_lease=_release_child_lease,
+            report_outcome=_report_outcome,
+            renew_lease=_renew_parent_lease,
         )
         await run_pipeline(env)
         if isinstance(request_kwargs, dict):
@@ -799,7 +838,8 @@ class SharedQuotaRoutingStrategy:
                 and selector.model_group_is_protocol_aware(model)
             ):
                 # M3: public opt-in required (defense in depth with pre-call gates)
-                if not selector.registry.model_opts_into_public(
+                # Trusted nested selects skip opt-in only; protocol/feature filters stay on.
+                if not is_trusted_internal() and not selector.registry.model_opts_into_public(
                     model, protocol_ctx.protocol
                 ):
                     raise ProtocolAwareRoutingError(

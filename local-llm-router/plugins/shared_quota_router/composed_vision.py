@@ -34,6 +34,14 @@ def stub_peel_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def is_vision_compose(logical: LogicalModelProtocols | None) -> bool:
+    """True when this logical model is a vision (translate+execute) facade."""
+    if logical is None or logical.compose is None:
+        return False
+    tmpl = (logical.compose.template or "vision").strip() or "vision"
+    return tmpl == "vision"
+
+
 def defers_image_gate(
     model_group: str | None,
     logical: LogicalModelProtocols | None = None,
@@ -42,7 +50,7 @@ def defers_image_gate(
         return False
     if model_group in composed_model_names():
         return True
-    return logical is not None and logical.compose is not None
+    return is_vision_compose(logical)
 
 
 def capability_features(

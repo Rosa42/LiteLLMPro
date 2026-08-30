@@ -256,7 +256,7 @@ async def test_async_select_runs_pipeline_and_writes_back(
 
 
 @pytest.mark.asyncio
-async def test_async_select_skips_pipeline_for_internal_call(
+async def test_async_select_runs_pipeline_when_client_sets_internal_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("GATEWAY_ENHANCE_ENABLED", "true")
@@ -274,11 +274,40 @@ async def test_async_select_skips_pipeline_for_internal_call(
             "internal_call": True,
         },
         "messages": [{"role": "user", "content": "hi"}],
-        "litellm_call_id": "parent#vision:deadbeef",
+        "litellm_call_id": "public-spoof-pipeline-envelope",
     }
     await strat.async_get_available_deployment(
         model=MODEL,
         messages=[{"role": "user", "content": "hi"}],
         request_kwargs=kwargs,
     )
+    assert calls == ["ran"]
+
+
+@pytest.mark.asyncio
+async def test_async_select_skips_pipeline_for_trusted_internal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shared_quota_router.internal_call import trusted_internal
+
+    monkeypatch.setenv("GATEWAY_ENHANCE_ENABLED", "true")
+    clear_flag_cache()
+    calls: list[str] = []
+
+    async def spy(env: Any) -> None:
+        calls.append("ran")
+
+    monkeypatch.setattr("shared_quota_router.pipeline.run_pipeline", spy)
+    strat = _strategy()
+    kwargs = {
+        "litellm_metadata": {"protocol": "anthropic_messages"},
+        "messages": [{"role": "user", "content": "hi"}],
+        "litellm_call_id": "trusted-skip-pipeline-envelope",
+    }
+    with trusted_internal():
+        await strat.async_get_available_deployment(
+            model=MODEL,
+            messages=[{"role": "user", "content": "hi"}],
+            request_kwargs=kwargs,
+        )
     assert calls == []

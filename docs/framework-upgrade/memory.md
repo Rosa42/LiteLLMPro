@@ -3,8 +3,8 @@
 | 项 | 值 |
 | --- | --- |
 | 文档类型 | 规格（spec） |
-| 状态 | **可施工** |
-| 日期 | 2026-08-25 |
+| 状态 | **已落地**（F4 检索 + F5 抽取队列；fail-open） |
+| 日期 | 2026-08-26 |
 | 实现落点 | `memory_workspace.py` / `memory_store.py` / `memory_retrieve.py` / `memory_extract.py` |
 | 介质 | **JSONL**（计划冻结；不用 SQLite、不用向量库） |
 | 依据 | `design-proposal.md` §8；Q4 / Q5 |

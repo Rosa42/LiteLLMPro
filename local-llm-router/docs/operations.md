@@ -52,3 +52,16 @@ docker compose --env-file .env -f deploy/docker-compose.yaml --profile core down
 - 仅绑定 `127.0.0.1`
 - 勿提交 `.env`
 - 日志勿打印 Authorization / 完整 Prompt
+
+## 视觉门面（增强层）
+
+维护入口：仓库根目录 [`docs/framework-upgrade/maintenance.md`](../../docs/framework-upgrade/maintenance.md)。
+
+切 execute / 译图必须在**宿主机**跑 `compose-vision-*`（不要进容器改 YAML）。只改 yaml 时重建 litellm 即可；改了 plugin 才 `--build`。
+
+```powershell
+cd E:\LiteLLMPro\local-llm-router
+.\scripts\llm-router.ps1 compose-vision-update -Id glm-5.2-vision -Execute glm-5.3 -Vision MiniMax-M3 -Force
+```
+
+回滚整层增强：`.env` 设 `GATEWAY_ENHANCE_ENABLED=false` 后重启。不要 flush Redis `sq:*`。

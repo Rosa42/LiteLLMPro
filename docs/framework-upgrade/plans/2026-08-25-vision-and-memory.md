@@ -6,6 +6,8 @@
 
 **Goal:** 在现有 G0-B 额度网关上落地两件事：对外合成模型 `glm-5.2-vision`（MiniMax-M3 译图 → `glm-5.2` 执行），以及按工作区共享的网关记忆（先只读手写库，再异步抽取）。
 
+> **Status (2026-08-30):** 预置视觉配方与记忆 V1 已编码。可配置槽位见已完成的 [`2026-08-30-composable-vision-recipes.md`](./2026-08-30-composable-vision-recipes.md)；日常维护见 [`../maintenance.md`](../maintenance.md)。下文任务清单保留为历史施工记录。
+
 **Architecture:** 增强层挂在 `async_get_available_deployment` **选号成功之后**，只改 `request_kwargs["messages"]`。不改 Fill First / affinity / tried / lease。视觉 fail-closed；记忆 fail-open。子调用独立 `litellm_call_id` 与独立额度组。V1 合成模型仅 Anthropic Messages。
 
 **Tech Stack:** LiteLLM **v1.90.5**、`plugins/shared_quota_router/`（运行时名 `shared_quota_router`）、本机 Redis（额度 fail-closed）、Docker 镜像 `COPY` 插件、Anthropic Messages。不改 `upstream/litellm`。

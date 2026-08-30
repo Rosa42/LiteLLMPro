@@ -293,7 +293,7 @@ async def test_minimax_translator_posts_and_strips_images(
             {
                 "model": model,
                 "rid": kw.get("litellm_call_id"),
-                "internal": (kw.get("litellm_metadata") or {}).get("internal_call"),
+                "features": (kw.get("litellm_metadata") or {}).get("required_features"),
             }
         )
         return {
@@ -317,7 +317,7 @@ async def test_minimax_translator_posts_and_strips_images(
     assert "image" not in [b.get("type") for b in env.messages[0]["content"]]
     assert IR in env.messages[0]["content"][1]["text"]
     assert selects and selects[0]["model"] == "MiniMax-M3"
-    assert selects[0]["internal"] is True
+    assert "image" in (selects[0]["features"] or [])
     assert "#vision:" in str(selects[0]["rid"])
     assert posts and posts[0]["url"].endswith("/v1/messages")
     assert posts[0]["model"] == "MiniMax-M3"
@@ -551,10 +551,10 @@ async def test_same_image_different_user_text_skips_cache(
     assert posts["n"] == 2
 
 
-def test_schema_ver_is_3() -> None:
+def test_schema_ver_is_4() -> None:
     from shared_quota_router.vision_cache import SCHEMA_VER
 
-    assert SCHEMA_VER == 3
+    assert SCHEMA_VER == 4
 
 
 def test_digest_includes_agent_id_and_prompt_rev() -> None:
@@ -568,6 +568,22 @@ def test_digest_includes_agent_id_and_prompt_rev() -> None:
     assert generic != other_agent
     assert generic != other_rev
     assert generic == vision_cache_digest(png, guide, agent_id="generic", prompt_rev=1)
+
+
+def test_digest_includes_translate_model() -> None:
+    from shared_quota_router.vision_compose import vision_cache_digest
+
+    png = b"\x89PNG\r\n"
+    a = vision_cache_digest(
+        png, "g", agent_id="generic", prompt_rev=1, translate_model="MiniMax-M3"
+    )
+    b = vision_cache_digest(
+        png, "g", agent_id="generic", prompt_rev=1, translate_model="other-vision"
+    )
+    assert a != b
+    assert a == vision_cache_digest(
+        png, "g", agent_id="generic", prompt_rev=1, translate_model="MiniMax-M3"
+    )
 
 
 @pytest.mark.asyncio
@@ -681,3 +697,217 @@ async def test_second_image_guide_excludes_first_ir(
     assert "SHOT1" not in user_texts[1]
     assert "gateway visual translation" not in user_texts[1].lower()
     assert "<visual-evidence><pre>SHOT1" not in user_texts[1]
+
+
+@pytest.mark.asyncio
+async def test_translate_429_reports_then_maps_unsupported(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GATEWAY_ENHANCE_ENABLED", "true")
+    monkeypatch.setenv("VISION_COMPOSE_ENABLED", "true")
+    monkeypatch.setenv("GATEWAY_VISION_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("S5_COMPOSED_MODELS", "glm-5.2-vision")
+    clear_flag_cache()
+    reports: list[dict] = []
+
+    def report(kwargs, *, success: bool, status_code=None, exception=None, **_k):
+        reports.append(
+            {
+                "success": success,
+                "status": status_code,
+                "qg": (kwargs.get("model_info") or {}).get("quota_group_id"),
+            }
+        )
+
+    async def post_429(url: str, *, headers: dict, json: dict, timeout: float = 60.0):
+        class _Resp:
+            status_code = 429
+
+            def json(self):
+                return {"error": {"message": "rate limit"}}
+
+            def raise_for_status(self) -> None:
+                raise RuntimeError("429")
+
+        return _Resp()
+
+    def select(model, **_kwargs):
+        return {
+            "model_name": "MiniMax-M3",
+            "model_info": {
+                "deployment_id": "mm-1",
+                "quota_group_id": "minimax-official",
+                "provider_id": "minimax",
+            },
+            "litellm_params": {
+                "model": "anthropic/MiniMax-M3",
+                "api_base": "https://api.minimaxi.com/anthropic",
+                "api_key": "secret-key-do-not-log",
+            },
+        }
+
+    env = _env(
+        _image_messages(),
+        select_deployment=select,
+        http_post=post_429,
+        report_outcome=report,
+        release_lease=lambda *_a: None,
+    )
+    with pytest.raises(ProtocolAwareRoutingError) as ei:
+        await run_pipeline(env)
+    assert ei.value.reason is ProtocolRoutingReason.FEATURE_UNSUPPORTED
+    assert reports and reports[0]["success"] is False
+    assert reports[0]["status"] == 429
+    assert reports[0]["qg"] == "minimax-official"
+
+
+@pytest.mark.asyncio
+async def test_circuit_bucket_does_not_block_other_quota_group(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GATEWAY_ENHANCE_ENABLED", "true")
+    monkeypatch.setenv("VISION_COMPOSE_ENABLED", "true")
+    monkeypatch.setenv("GATEWAY_VISION_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("S5_COMPOSED_MODELS", "glm-5.2-vision")
+    clear_flag_cache()
+    qgs = ["minimax-a", "minimax-a", "minimax-a", "minimax-b"]
+    n = {"i": 0}
+    posts: list[str] = []
+
+    def select(model, **_kwargs):
+        qg = qgs[min(n["i"], len(qgs) - 1)]
+        n["i"] += 1
+        return {
+            "model_name": "MiniMax-M3",
+            "model_info": {"quota_group_id": qg, "deployment_id": f"dep-{qg}"},
+            "litellm_params": {
+                "model": "anthropic/MiniMax-M3",
+                "api_base": "https://api.minimaxi.com/anthropic",
+                "api_key": "secret-key-do-not-log",
+            },
+        }
+
+    async def fail_post(url: str, *, headers: dict, json: dict, timeout: float = 60.0):
+        posts.append("fail")
+
+        class _Resp:
+            status_code = 500
+
+            def json(self):
+                return {"error": {"message": "upstream"}}
+
+            def raise_for_status(self) -> None:
+                raise RuntimeError("500")
+
+        return _Resp()
+
+    for _ in range(3):
+        with pytest.raises(ProtocolAwareRoutingError) as ei:
+            await run_pipeline(
+                _env(
+                    _image_messages(),
+                    select_deployment=select,
+                    http_post=fail_post,
+                    report_outcome=lambda *_a, **_k: None,
+                    release_lease=lambda *_a: None,
+                )
+            )
+        assert ei.value.details.get("vision") != "circuit_open"
+
+    async def ok_post(url: str, *, headers: dict, json: dict, timeout: float = 60.0):
+        posts.append("ok")
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return {"content": [{"type": "text", "text": IR}]}
+
+            def raise_for_status(self) -> None:
+                return None
+
+        return _Resp()
+
+    await run_pipeline(
+        _env(
+            _image_messages(),
+            select_deployment=select,
+            http_post=ok_post,
+            report_outcome=lambda *_a, **_k: None,
+            release_lease=lambda *_a: None,
+        )
+    )
+    assert "ok" in posts
+
+
+@pytest.mark.asyncio
+async def test_parent_lease_renewed_after_each_image(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GATEWAY_ENHANCE_ENABLED", "true")
+    monkeypatch.setenv("VISION_COMPOSE_ENABLED", "true")
+    monkeypatch.setenv("GATEWAY_VISION_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("S5_COMPOSED_MODELS", "glm-5.2-vision")
+    clear_flag_cache()
+    renewed: list[tuple[str, str, int]] = []
+
+    async def fake(_png: bytes, _guide: str = "") -> str:
+        return IR
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": PNG_B64},
+                },
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": PNG_B64,
+                    },
+                },
+            ],
+        }
+    ]
+    env = _env(
+        messages,
+        translator=fake,
+        renew_lease=lambda qg, rid, ttl=510: renewed.append((qg, rid, ttl)),
+    )
+    await run_pipeline(env)
+    assert len(renewed) == 2
+    assert renewed[0][0] == "volc-c"
+    assert renewed[0][1] == "r1"
+
+
+@pytest.mark.asyncio
+async def test_parent_lease_renewed_for_six_images(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GATEWAY_ENHANCE_ENABLED", "true")
+    monkeypatch.setenv("VISION_COMPOSE_ENABLED", "true")
+    monkeypatch.setenv("GATEWAY_VISION_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("S5_COMPOSED_MODELS", "glm-5.2-vision")
+    clear_flag_cache()
+    renewed: list[tuple[str, str, int]] = []
+
+    async def fake(_png: bytes, _guide: str = "") -> str:
+        return IR
+
+    image = {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": PNG_B64},
+    }
+    messages = [{"role": "user", "content": [dict(image) for _ in range(6)]}]
+    env = _env(
+        messages,
+        translator=fake,
+        renew_lease=lambda qg, rid, ttl=510: renewed.append((qg, rid, ttl)),
+    )
+    await run_pipeline(env)
+    assert len(renewed) == 6
+    assert all(item[0] == "volc-c" and item[1] == "r1" for item in renewed)

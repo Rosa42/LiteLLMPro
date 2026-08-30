@@ -4,16 +4,16 @@
 | 项       | 值                                                                      |
 | ------- | ---------------------------------------------------------------------- |
 | 文档类型    | **设计提案**（Design Proposal）                                              |
-| 状态      | **方向通过；挂点与 IMAGE 时序已闭合（S1 / S2 / S5）。** pre-call 剥图仍不可用。施工方案已拟定。Q1–Q6 已冻结。未写规格之前不实现 MiniMax 翻译。 |
-| 日期      | 2026-08-21（2026-08-24 探针；2026-08-25 挂接施工方案）                          |
+| 状态      | **方向通过；挂点与 IMAGE 时序已闭合（S1 / S2 / S5）。** 视觉配方 V1 + 记忆 V1 **已编码落地**（2026-08-30）。pre-call 剥图仍不可用。Q1–Q6 已冻结。日常维护见 [`maintenance.md`](./maintenance.md)。 |
+| 日期      | 2026-08-21（2026-08-24 探针；2026-08-25 挂接施工方案；2026-08-30 V1 落地） |
 | 读者      | 本仓库后续实现与评审（含 AGENT）                                                    |
 | 实现落点    | `local-llm-router/plugins/shared_quota_router/`                        |
 | LiteLLM | 钉死 v1.90.5；不改 `upstream/litellm` 业务逻辑                                  |
 
 
-本文件把「可插拔模块 + 多模型组合 + 网关层共享记忆」整理成一份可评审的提案。它不是施工清单。
+本文件把「可插拔模块 + 多模型组合 + 网关层共享记忆」整理成一份可评审的提案。它不是施工清单，也不是运维手册。
 
-**施工门槛：** 核心原则与现网关纪律一致。P0：A PASS、B FAIL（pre-call）、S1/S2/S5 PASS。`MiniMax-M3` 已声明 `image`。生产配置**未**新增 `glm-5.2-vision`。施工方案：[`plans/2026-08-25-vision-and-memory.md`](./plans/2026-08-25-vision-and-memory.md)。S5 stub 剥图不是配方；未写规格之前不实现 MiniMax 翻译。
+**落地情况（2026-08-30）：** 核心原则与现网关纪律一致。P0：A PASS、B FAIL（pre-call）、S1/S2/S5 PASS。`MiniMax-M3` 已声明 `image`。预置门面 `glm-5.2-vision` 与可配置槽位、网关记忆 V1 已在插件中落地。切 execute / 译图走宿主机 CLI，见 [`maintenance.md`](./maintenance.md)。S5 stub 剥图不是配方。施工记录：[`plans/2026-08-25-vision-and-memory.md`](./plans/2026-08-25-vision-and-memory.md)、[`plans/2026-08-30-composable-vision-recipes.md`](./plans/2026-08-30-composable-vision-recipes.md)。
 
 评审处理原则：只吸收与现有额度内核、fail-closed / 禁止静默降级纪律相容的建议；研究型条目记入 §17。
 
@@ -455,9 +455,9 @@ workspace 推断与规范化：
   - 探针 A（2026-08-21）：PASS（直连 MiniMax）。M3 已配 `image` feature。
   - 探针 B（2026-08-21）：FAIL（pre-call 改 `data["messages"]` 未到上游）。
   - remount S1 / S2 / S5（2026-08-24）：PASS。挂点 = 选号后 `request_kwargs`；合成模型推迟 IMAGE；纯 `glm-5.2` 带图仍拒。
-2. **拆规格**：`pipeline.md` / `vision-compose.md` / `memory.md`（P1 清单见 §16）。挂点已证，允许拆；未拆之前不写 MiniMax 翻译。
+2. **拆规格**（已完成）：`pipeline.md` / `vision-compose.md` / `memory.md`。可配置槽位见 [`specs/2026-08-28-composable-recipes-design.md`](./specs/2026-08-28-composable-recipes-design.md)。
 3. **Pipeline MVP**：信封、有序列表、总开关、阶段耗时计数。现有测试全绿。
-4. **视觉翻译**：评估集 → prompt 迭代 → 单图缓存 → 全量替换（含 `tool_result`）→ 质量门 + 快速失败 + §7.8 子调用。生产才新增 `glm-5.2-vision`。
+4. **视觉翻译**（已落地）：评估集 → prompt 迭代 → 单图缓存 → 全量替换（含 `tool_result`）→ 质量门 + 快速失败 + §7.8 子调用。生产预置 `glm-5.2-vision`；槽位可宿主机切换。
 5. **记忆检索**：规范化 workspace + JSONL/SQLite + 只读注入。
 6. **记忆写入**：队列 enqueue + Q5 抽取；不在 `on_stream_complete` 里阻塞调用。
 7. **成本归因**：计数，不加 histogram。
@@ -593,7 +593,9 @@ V1 协议扫描以 Anthropic `image` 为主，并递归 `tool_result`。Chat `im
 
 ## 16. 施工门槛与下一步
 
-**结论：方向通过；挂点与 IMAGE 时序已闭合。** pre-call 剥图仍不可用。允许拆 `pipeline.md` / `vision-compose.md` / `memory.md`。不得把 S5 stub 当 MiniMax 翻译，不得在生产 discovery 广告 `glm-5.2-vision` 直到配方落地。
+**结论：方向通过；挂点与 IMAGE 时序已闭合。** pre-call 剥图仍不可用。`pipeline.md` / `vision-compose.md` / `memory.md` 已写且视觉配方 V1 **已编码落地**（2026-08-30）。不得把 S5 stub 当 MiniMax 翻译。
+
+**维护入口：** [`maintenance.md`](./maintenance.md)。现网切 execute→`glm-5.3` 是宿主机 CLI，不是新编码项。不要先做管理 UI / rethink。
 
 ### P0 — 结果
 
@@ -677,7 +679,7 @@ HTML 白名单细化、记忆投毒防护、细粒度 ACL、histogram、bulkhead
 | workspace 规范化与可信来源                            | **采纳**        | 见 §8.2                                                  |
 | 上下文字节/token 上限                                | **采纳**        | 见 §7.3                                                  |
 | 「只新增文件」改为「不改变额度选号语义」                          | **采纳**        | 见 §2.1、§6.1                                             |
-| 方向通过、暂不通过施工评审                                 | **更新**        | 挂点已证，允许拆规格；配方与记忆仍未落地。见文首与 §16                    |
+| 方向通过、暂不通过施工评审                                 | **更新**        | 挂点已证；规格已拆；视觉配方 V1 + 记忆 V1 已落地。维护见 [`maintenance.md`](./maintenance.md) |
 
 
-Late fusion 与线性 pipeline 仍保留。**剥图挂点是选号后的 `request_kwargs`，不是 pre-call。** 下一步拆规格，再写 MiniMax 翻译；不要倒回 pre-call 剥图。
+Late fusion 与线性 pipeline 仍保留。**剥图挂点是选号后的 `request_kwargs`，不是 pre-call。** 不要倒回 pre-call 剥图。日常切槽位见 [`maintenance.md`](./maintenance.md)。

@@ -220,6 +220,7 @@ def _render_logical_models_section(doc: PlansDocument) -> list[str]:
             )
         if lm.compose is not None:
             lines.append("    compose:")
+            lines.append(f"      template: {ascii_safe(lm.compose.template)}")
             lines.append(f"      execute_model: {ascii_safe(lm.compose.execute_model)}")
             lines.append(
                 f"      translate_model: {ascii_safe(lm.compose.translate_model)}"
@@ -271,14 +272,22 @@ def _render_deployment_block(
     if features:
         block.append(f"      supported_features: {_feature_yaml_list(features)}")
     block.append(f"      supports_streaming: {'true' if streaming else 'false'}")
+    timeout = 300
+    if lm is not None and lm.compose is not None:
+        tmpl = (lm.compose.template or "vision").strip() or "vision"
+        if tmpl == "vision":
+            timeout = max(timeout, 480)
     if public:
         block.append(f"      public_protocols: {_protocol_yaml_list(public)}")
     if lm is not None and lm.advertised_features:
         block.append(
             f"      advertised_features: {_feature_yaml_list(lm.advertised_features)}"
         )
+    if model.facade_role:
+        block.append(f"      facade_role: {model.facade_role}")
     if lm is not None and lm.compose is not None:
         block.append("      compose:")
+        block.append(f"        template: {ascii_safe(lm.compose.template)}")
         block.append(f"        execute_model: {ascii_safe(lm.compose.execute_model)}")
         block.append(
             f"        translate_model: {ascii_safe(lm.compose.translate_model)}"
@@ -302,7 +311,7 @@ def _render_deployment_block(
             f"      model: {litellm_model}",
             f"      api_base: os.environ/{base_env}",
             f"      api_key: os.environ/{key_env}",
-            "      timeout: 300",
+            f"      timeout: {timeout}",
         ]
     )
     # Responses 公网 + Chat 上游：强制走 chat completions bridge

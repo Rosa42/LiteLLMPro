@@ -23,9 +23,13 @@ from shared_quota_router.anthropic_direct import (
 )
 from shared_quota_router.composed_vision import defers_image_gate, messages_have_image
 from shared_quota_router.feature_flags import is_vision_compose_enabled
-from shared_quota_router.internal_call import assert_quota_exclusive, child_request_id
+from shared_quota_router.internal_call import (
+    child_request_id,
+    report_internal_outcome,
+    select_internal_deployment,
+)
 from shared_quota_router.metrics import inc
-from shared_quota_router.models import ApiProtocol, LogicalModelProtocols
+from shared_quota_router.models import ApiProtocol, Feature, LogicalModelProtocols
 from shared_quota_router.pipeline import EnhanceEnvelope
 from shared_quota_router.protocol_errors import (
     ProtocolAwareRoutingError,
@@ -73,41 +77,47 @@ MAX_TASK_CHARS = 1500
 MAX_CONTEXT_CHARS = 2000
 CIRCUIT_FAILURES = 3
 CIRCUIT_WINDOW_S = 60.0
+PARENT_LEASE_TTL = 510
 
-_fail_streak = 0
-_open_until = 0.0
+_circuits: dict[tuple[str, str], list[float]] = {}
 _circuit_lock = threading.Lock()
 
 
 def reset_circuit_for_tests() -> None:
-    global _fail_streak, _open_until
     with _circuit_lock:
-        _fail_streak = 0
-        _open_until = 0.0
+        _circuits.clear()
 
 
-def _circuit_open() -> bool:
+def _bucket(translate_model: str, quota_group_id: str) -> tuple[str, str]:
+    return (translate_model or "injected", quota_group_id or "")
+
+
+def _circuit_open(translate_model: str, quota_group_id: str) -> bool:
+    key = _bucket(translate_model, quota_group_id)
     with _circuit_lock:
-        return time.monotonic() < _open_until
+        until = float((_circuits.get(key) or [0.0, 0.0])[1])
+        return time.monotonic() < until
 
 
-def _note_success() -> None:
-    global _fail_streak, _open_until
+def _note_success(translate_model: str, quota_group_id: str) -> None:
+    key = _bucket(translate_model, quota_group_id)
     with _circuit_lock:
-        _fail_streak = 0
-        _open_until = 0.0
+        _circuits[key] = [0.0, 0.0]
 
 
-def _note_failure() -> None:
-    global _fail_streak, _open_until
+def _note_failure(translate_model: str, quota_group_id: str) -> None:
+    key = _bucket(translate_model, quota_group_id)
     with _circuit_lock:
-        _fail_streak += 1
-        if _fail_streak >= CIRCUIT_FAILURES:
-            _open_until = time.monotonic() + CIRCUIT_WINDOW_S
+        streak, _until = _circuits.get(key) or [0.0, 0.0]
+        streak = float(streak) + 1.0
+        until = 0.0
+        if streak >= CIRCUIT_FAILURES:
+            until = time.monotonic() + CIRCUIT_WINDOW_S
+        _circuits[key] = [streak, until]
 
 
-def _raise_if_circuit_open() -> None:
-    if not _circuit_open():
+def _raise_if_circuit_open(translate_model: str, quota_group_id: str) -> None:
+    if not _circuit_open(translate_model, quota_group_id):
         return
     inc("enhance_vision_circuit_open")
     raise ProtocolAwareRoutingError(
@@ -324,6 +334,8 @@ def vision_cache_digest(
     *,
     agent_id: str = "generic",
     prompt_rev: int = 1,
+    translate_model: str = "",
+    compose_rev: str = "",
 ) -> str:
     digest = hashlib.sha256()
     digest.update(png)
@@ -335,6 +347,10 @@ def vision_cache_digest(
     if blob:
         digest.update(b"\0guide\0")
         digest.update(blob)
+    digest.update(b"\0translator\0")
+    digest.update((translate_model or "").encode("utf-8"))
+    digest.update(b"\0compose\0")
+    digest.update((compose_rev or "").encode("utf-8"))
     return digest.hexdigest()
 
 
@@ -354,6 +370,15 @@ def _translate_user_text(guide: str) -> str:
     )
 
 
+def _circuit_key_for(translator: Translator | None) -> tuple[str, str]:
+    if translator is not None and getattr(translator, "translate_model", None):
+        return (
+            str(getattr(translator, "translate_model")),
+            str(getattr(translator, "last_qg", "") or ""),
+        )
+    return ("injected", "")
+
+
 async def _translate_one(
     png: bytes,
     translator: Translator | None,
@@ -361,15 +386,24 @@ async def _translate_one(
     guide: str = "",
     agent_id: str = "generic",
     prompt_rev: int = 1,
+    translate_model: str = "",
+    compose_rev: str = "",
 ) -> str:
     digest = vision_cache_digest(
-        png, guide, agent_id=agent_id, prompt_rev=prompt_rev
+        png,
+        guide,
+        agent_id=agent_id,
+        prompt_rev=prompt_rev,
+        translate_model=translate_model,
+        compose_rev=compose_rev,
     )
     hit = get_cached(digest, schema_ver=SCHEMA_VER)
     if hit is not None:
         inc("enhance_vision_cache_hit")
         return hit
-    _raise_if_circuit_open()
+    http_translator = bool(translator is not None and getattr(translator, "translate_model", None))
+    if not http_translator:
+        _raise_if_circuit_open("injected", "")
     if translator is None:
         raise _unsupported(
             "composed model still has image blocks; vision translator is not mounted",
@@ -385,16 +419,19 @@ async def _translate_one(
                 vision_limit="tokens",
             )
         put_cached(digest, fragment, schema_ver=SCHEMA_VER)
-        _note_success()
+        model, qg = _circuit_key_for(translator)
+        _note_success(model, qg)
         inc("enhance_vision_ok")
         return fragment
     except ProtocolAwareRoutingError as exc:
         if _counts_toward_circuit(exc):
-            _note_failure()
+            model, qg = _circuit_key_for(translator)
+            _note_failure(model, qg)
             inc("enhance_vision_fail")
         raise
     except Exception as exc:
-        _note_failure()
+        model, qg = _circuit_key_for(translator)
+        _note_failure(model, qg)
         inc("enhance_vision_fail")
         raise _unsupported(
             "vision translator failed",
@@ -409,6 +446,9 @@ async def _rewrite_images_in_messages(
     agent_id: str = "generic",
     prompt_rev: int = 1,
     extract_guide: Callable[[Any, ImageRef], str] | None = None,
+    translate_model: str = "",
+    compose_rev: str = "",
+    after_image: Callable[[], None] | None = None,
 ) -> list[str]:
     evidence: list[str] = []
     if not isinstance(messages, list):
@@ -424,9 +464,16 @@ async def _rewrite_images_in_messages(
             guide=guide,
             agent_id=agent_id,
             prompt_rev=prompt_rev,
+            translate_model=translate_model,
+            compose_rev=compose_rev,
         )
         evidence.append(ir)
         _replace_block(messages, ref, _text_block(ir))
+        if callable(after_image):
+            try:
+                after_image()
+            except Exception as exc:  # noqa: BLE001 — renew must not fail the parent
+                logger.warning("parent lease renew failed: %s", exc)
     return evidence
 
 
@@ -483,29 +530,45 @@ class _MiniMaxTranslator:
         self.env = env
         self.translate_model = translate_model
         self.system = system
+        self.last_qg = ""
+
+    def _report(
+        self,
+        kwargs: dict[str, Any],
+        *,
+        success: bool,
+        status_code: int | None = None,
+        exception: BaseException | None = None,
+    ) -> None:
+        fn = self.env.report_outcome
+        if callable(fn):
+            fn(
+                kwargs,
+                success=success,
+                status_code=status_code,
+                exception=exception,
+            )
+            return
+        report_internal_outcome(
+            kwargs,
+            success=success,
+            status_code=status_code,
+            exception=exception,
+        )
 
     async def __call__(self, png: bytes, guide: str = "") -> str:
         digest = hashlib.sha256(png).hexdigest()
         child_id = child_request_id(self.env.parent_request_id, "vision", digest)
-        child_kwargs = {
-            "litellm_call_id": child_id,
-            "messages": [{"role": "user", "content": "Translate this screenshot."}],
-            "litellm_metadata": {
-                "protocol": ApiProtocol.ANTHROPIC_MESSAGES.value,
-                "internal_call": True,
-                "internal_kind": "vision",
-            },
-            "metadata": {
-                "protocol": ApiProtocol.ANTHROPIC_MESSAGES.value,
-                "internal_call": True,
-                "internal_kind": "vision",
-            },
-        }
+        child_qg = ""
         try:
-            entry = self.env.select_deployment(
+            entry = select_internal_deployment(
                 self.translate_model,
-                messages=child_kwargs["messages"],
-                request_kwargs=child_kwargs,
+                select=self.env.select_deployment,
+                protocol=ApiProtocol.ANTHROPIC_MESSAGES,
+                required_features=frozenset({Feature.TEXT, Feature.IMAGE}),
+                parent_request_id=self.env.parent_request_id,
+                parent_quota_group_id=self.env.parent_quota_group_id,
+                child_id=child_id,
             )
         except ProtocolAwareRoutingError:
             raise
@@ -514,21 +577,18 @@ class _MiniMaxTranslator:
                 "vision translate model has no available deployment",
                 vision="upstream",
             ) from exc
-        if not isinstance(entry, dict):
-            raise _unsupported(
-                "vision translate select returned no deployment",
-                vision="upstream",
-            )
         info = entry.get("model_info") if isinstance(entry.get("model_info"), dict) else {}
         child_qg = str(info.get("quota_group_id") or "")
+        self.last_qg = child_qg
+        _raise_if_circuit_open(self.translate_model, child_qg)
+        params = entry.get("litellm_params") if isinstance(entry.get("litellm_params"), dict) else {}
+        report_kwargs = {
+            "litellm_call_id": child_id,
+            "model_info": info,
+            "litellm_params": {**params, "model_info": info},
+            "_sq_nested_child": True,
+        }
         try:
-            assert_quota_exclusive(
-                self.env.parent_quota_group_id,
-                child_qg,
-                protocol=ApiProtocol.ANTHROPIC_MESSAGES,
-                model_group=self.env.model_group,
-            )
-            params = entry.get("litellm_params") if isinstance(entry.get("litellm_params"), dict) else {}
             api_base = resolve_env_ref(params.get("api_base"))
             api_key = resolve_env_ref(params.get("api_key"))
             if not api_base or not api_key:
@@ -575,12 +635,14 @@ class _MiniMaxTranslator:
                     "vision translate http failed type=%s",
                     type(exc).__name__,
                 )
+                self._report(report_kwargs, success=False, exception=exc)
                 raise _unsupported(
                     "vision translate upstream request failed",
                     vision="timeout" if "timeout" in str(exc).lower() else "upstream",
                 ) from exc
             status = int(getattr(resp, "status_code", 200) or 200)
             if status >= 400:
+                self._report(report_kwargs, success=False, status_code=status)
                 raise _unsupported(
                     "vision translate upstream returned an error",
                     vision="upstream",
@@ -590,6 +652,7 @@ class _MiniMaxTranslator:
                 try:
                     raise_for_status()
                 except Exception as exc:
+                    self._report(report_kwargs, success=False, status_code=status)
                     raise _unsupported(
                         "vision translate upstream returned an error",
                         vision="upstream",
@@ -599,10 +662,12 @@ class _MiniMaxTranslator:
                 payload = payload()
             text = extract_text_from_messages_response(payload)
             if not text.strip():
+                self._report(report_kwargs, success=True, status_code=status)
                 raise _unsupported(
                     "vision translator returned empty IR",
                     vision="empty_ir",
                 )
+            self._report(report_kwargs, success=True, status_code=status)
             return text
         finally:
             release = self.env.release_lease
@@ -626,6 +691,14 @@ def _translate_model_name(env: EnhanceEnvelope, logical: LogicalModelProtocols |
     if logical is not None and logical.compose is not None:
         return logical.compose.translate_model
     return "MiniMax-M3"
+
+
+def _compose_rev(logical: LogicalModelProtocols | None, translate_model: str) -> str:
+    if logical is not None and logical.compose is not None:
+        recipe = logical.compose
+        tmpl = (recipe.template or "vision").strip() or "vision"
+        return f"{tmpl}:{recipe.execute_model}:{recipe.translate_model}"
+    return f"vision::{translate_model}"
 
 
 class VisionComposeStage:
@@ -675,6 +748,8 @@ class VisionComposeStage:
             extract_fn = preset.extract_guide
 
         inc("enhance_vision_agent", agent_id=preset.id, match=match)
+        tmodel = _translate_model_name(env, logical)
+        crev = _compose_rev(logical, tmodel)
         translator: Translator | None = env.translator
         if translator is None:
             if env.select_deployment is None:
@@ -682,15 +757,25 @@ class VisionComposeStage:
             else:
                 translator = _MiniMaxTranslator(
                     env,
-                    _translate_model_name(env, logical),
+                    tmodel,
                     system=system,
                 )
+
+        def _after_image() -> None:
+            renew = env.renew_lease
+            if not callable(renew) or not env.parent_quota_group_id or not env.parent_request_id:
+                return
+            renew(env.parent_quota_group_id, env.parent_request_id, PARENT_LEASE_TTL)
+
         evidence = await _rewrite_images_in_messages(
             env.messages,
             translator,
             agent_id=preset.id,
             prompt_rev=preset.prompt_rev,
             extract_guide=extract_fn,
+            translate_model=tmodel,
+            compose_rev=crev,
+            after_image=_after_image,
         )
         env.visual_evidence.extend(evidence)
         if messages_have_image(env.messages):

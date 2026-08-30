@@ -40,6 +40,11 @@ DEFAULT_CHAT_FEATURES: frozenset[Feature] = frozenset({Feature.TEXT})
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # quota_group_id / plan.id 格式（P1-QG-ID）；非法一律拒绝，禁止 ascii_safe 静默改写。
 _QUOTA_GROUP_ID_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
+_LOGICAL_MODEL_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{1,63}$")
+_COMPOSE_KEYS = frozenset(
+    {"template", "execute_model", "translate_model", "reasoning", "vision"}
+)
+_GRANDFATHER_VISION_FACADE = "glm-5.2-vision"
 # Reject accidental secret material in config files (values, not env names).
 _SECRETISH_RE = re.compile(
     r"(?i)\b(sk-[a-zA-Z0-9]{10,}|ark-[a-zA-Z0-9]{8,}|Bearer\s+\S+|api[_-]?key\s*[:=]\s*['\"]?[^'\"\s]{8,})"
@@ -60,6 +65,7 @@ class PlanModelEntry:
     supports_streaming: bool | None = None
     enabled: bool | None = None
     conversions: tuple[ConversionCapability, ...] | None = None
+    facade_role: str | None = None
 
 
 @dataclass(slots=True)
@@ -161,6 +167,16 @@ def _require_quota_group_id(value: str, *, context: str) -> str:
             f"^[a-z][a-z0-9-]{{1,63}}$ (reject silent rewrite)"
         )
     return qg
+
+
+def _require_logical_model_id(value: str, *, context: str) -> str:
+    name = (value or "").strip()
+    if not name or not _LOGICAL_MODEL_ID_RE.match(name):
+        raise ConfigValidationError(
+            f"{context}: {name!r} must match "
+            f"^[A-Za-z][A-Za-z0-9._-]{{1,63}}$ (reject silent rewrite)"
+        )
+    return name
 
 
 def _streaming_from_features(features: frozenset[Feature]) -> bool:
@@ -274,6 +290,15 @@ def _parse_model_entry(raw: Any, *, plan_id: str) -> PlanModelEntry:
         conversions = _parse_conversion_list(
             raw.get("conversions"), context=f"plan {plan_id!r} model {model!r}"
         )
+    role_raw = raw.get("facade_role")
+    facade_role = None
+    if role_raw not in (None, ""):
+        facade_role = str(role_raw).strip()
+        if facade_role != "vision":
+            raise ConfigValidationError(
+                f"plan {plan_id!r} model {model!r}: facade_role {facade_role!r} "
+                f"is not supported"
+            )
     return PlanModelEntry(
         model=model,
         upstream_protocol=proto,
@@ -281,6 +306,7 @@ def _parse_model_entry(raw: Any, *, plan_id: str) -> PlanModelEntry:
         supports_streaming=bool(streaming) if streaming is not None else None,
         enabled=bool(enabled) if enabled is not None else None,
         conversions=conversions,
+        facade_role=facade_role,
     )
 
 
@@ -445,8 +471,34 @@ def _parse_compose_recipe(raw: Any, *, model_group: str) -> ComposeRecipe | None
         raise ConfigValidationError(
             f"logical model {model_group!r}: compose must be a mapping"
         )
-    execute = str(raw.get("execute_model") or "").strip()
-    translate = str(raw.get("translate_model") or "").strip()
+    unknown = set(raw.keys()) - _COMPOSE_KEYS
+    if unknown:
+        raise ConfigValidationError(
+            f"logical model {model_group!r}: compose unknown keys "
+            f"{sorted(str(k) for k in unknown)}"
+        )
+    template = str(raw.get("template") or "vision").strip() or "vision"
+    if template != "vision":
+        raise ConfigValidationError(
+            f"logical model {model_group!r}: compose.template {template!r} "
+            f"is not supported"
+        )
+    exec_canon = str(raw.get("execute_model") or "").strip()
+    exec_alias = str(raw.get("reasoning") or "").strip()
+    if exec_canon and exec_alias and exec_canon != exec_alias:
+        raise ConfigValidationError(
+            f"logical model {model_group!r}: compose.execute_model and "
+            f"compose.reasoning disagree"
+        )
+    trans_canon = str(raw.get("translate_model") or "").strip()
+    trans_alias = str(raw.get("vision") or "").strip()
+    if trans_canon and trans_alias and trans_canon != trans_alias:
+        raise ConfigValidationError(
+            f"logical model {model_group!r}: compose.translate_model and "
+            f"compose.vision disagree"
+        )
+    execute = exec_canon or exec_alias
+    translate = trans_canon or trans_alias
     if not execute or not translate:
         raise ConfigValidationError(
             f"logical model {model_group!r}: compose requires execute_model "
@@ -457,7 +509,17 @@ def _parse_compose_recipe(raw: Any, *, model_group: str) -> ComposeRecipe | None
             f"logical model {model_group!r}: compose.execute_model must differ "
             f"from compose.translate_model"
         )
-    return ComposeRecipe(execute_model=execute, translate_model=translate)
+    _require_logical_model_id(
+        execute, context=f"logical model {model_group!r} compose.execute_model"
+    )
+    _require_logical_model_id(
+        translate, context=f"logical model {model_group!r} compose.translate_model"
+    )
+    return ComposeRecipe(
+        execute_model=execute,
+        translate_model=translate,
+        template=template,
+    )
 
 
 def _quota_groups_for_model(doc: PlansDocument, model_group: str) -> set[str]:
@@ -470,6 +532,32 @@ def _quota_groups_for_model(doc: PlansDocument, model_group: str) -> set[str]:
                 continue
             found.add(plan.quota_group_id)
     return found
+
+
+def eligible_routes(
+    doc: PlansDocument,
+    model_group: str,
+    protocol: ApiProtocol,
+    required: frozenset[Feature],
+) -> set[tuple[str, str]]:
+    """Enabled (plan.id, quota_group_id) rows matching protocol and features."""
+    found: set[tuple[str, str]] = set()
+    for plan in doc.plans:
+        for m in plan.models:
+            if m.model != model_group:
+                continue
+            if not plan.resolved_enabled(m):
+                continue
+            if plan.resolved_protocol(m) is not protocol:
+                continue
+            if not required <= plan.resolved_features(m):
+                continue
+            found.add((plan.id, plan.quota_group_id))
+    return found
+
+
+def _quota_groups_for_routes(routes: set[tuple[str, str]]) -> set[str]:
+    return {qg for _, qg in routes}
 
 
 def _parse_logical_models(raw: Any) -> dict[str, LogicalModelProtocols]:
@@ -597,6 +685,42 @@ def _iter_declared_conversions(
     return out
 
 
+def _directed_cycle(graph: dict[str, set[str]]) -> bool:
+    gray: set[str] = set()
+    black: set[str] = set()
+
+    def visit(node: str) -> bool:
+        gray.add(node)
+        for nxt in graph.get(node, ()):
+            if nxt not in graph:
+                continue
+            if nxt in gray:
+                return True
+            if nxt not in black and visit(nxt):
+                return True
+        gray.discard(node)
+        black.add(node)
+        return False
+
+    return any(visit(node) for node in graph if node not in black)
+
+
+def _execute_advertised_base(doc: PlansDocument, execute_model: str) -> frozenset[Feature]:
+    lm = doc.logical_models.get(execute_model)
+    if lm is not None and lm.advertised_features:
+        return lm.advertised_features
+    inter: frozenset[Feature] | None = None
+    for plan in doc.plans:
+        for m in plan.models:
+            if m.model != execute_model or not plan.resolved_enabled(m):
+                continue
+            if plan.resolved_protocol(m) is not ApiProtocol.ANTHROPIC_MESSAGES:
+                continue
+            feats = plan.resolved_features(m)
+            inter = feats if inter is None else inter & feats
+    return inter or frozenset()
+
+
 def validate_plans_document(doc: PlansDocument) -> None:
     """Cross-field validation after parse."""
     if not doc.plans:
@@ -688,29 +812,119 @@ def validate_plans_document(doc: PlansDocument) -> None:
             )
 
         if lm.compose is None:
+            for plan in doc.plans:
+                for m in plan.models:
+                    if m.model != mg or not plan.resolved_enabled(m):
+                        continue
+                    if m.facade_role:
+                        raise ConfigValidationError(
+                            f"logical model {mg!r}: facade_role is set but compose "
+                            f"is missing"
+                        )
             continue
-        execute_qgs = _quota_groups_for_model(doc, lm.compose.execute_model)
-        translate_qgs = _quota_groups_for_model(doc, lm.compose.translate_model)
-        if not execute_qgs:
+        _require_logical_model_id(mg, context=f"logical model {mg!r}")
+        if lm.public_protocols != frozenset({ApiProtocol.ANTHROPIC_MESSAGES}):
+            raise ConfigValidationError(
+                f"logical model {mg!r}: vision compose public_protocols must be "
+                f"exactly [anthropic_messages]"
+            )
+        recipe = lm.compose
+        compose_ids = {
+            name for name, other in doc.logical_models.items() if other.compose is not None
+        }
+        role_ids = {
+            m.model
+            for plan in doc.plans
+            for m in plan.models
+            if m.facade_role == "vision"
+        }
+        forbidden_slots = compose_ids | role_ids | {mg}
+        for slot_name, slot_label in (
+            (recipe.execute_model, "execute_model"),
+            (recipe.translate_model, "translate_model"),
+        ):
+            if slot_name in forbidden_slots:
+                raise ConfigValidationError(
+                    f"logical model {mg!r}: compose.{slot_label} {slot_name!r} "
+                    f"must not be a compose facade"
+                )
+        graph: dict[str, set[str]] = {}
+        for name, other in doc.logical_models.items():
+            if other.compose is None:
+                continue
+            graph[name] = {
+                other.compose.execute_model,
+                other.compose.translate_model,
+            }
+        if _directed_cycle(graph):
+            raise ConfigValidationError(
+                f"logical model {mg!r}: compose slots form a cycle"
+            )
+        exec_routes = eligible_routes(
+            doc,
+            recipe.execute_model,
+            ApiProtocol.ANTHROPIC_MESSAGES,
+            frozenset({Feature.TEXT}),
+        )
+        trans_routes = eligible_routes(
+            doc,
+            recipe.translate_model,
+            ApiProtocol.ANTHROPIC_MESSAGES,
+            frozenset({Feature.TEXT, Feature.IMAGE}),
+        )
+        if not exec_routes:
             raise ConfigValidationError(
                 f"logical model {mg!r}: compose.execute_model "
-                f"{lm.compose.execute_model!r} has no enabled deployment"
+                f"{recipe.execute_model!r} has no enabled deployment"
             )
-        if not translate_qgs:
+        if not trans_routes:
             raise ConfigValidationError(
                 f"logical model {mg!r}: compose.translate_model "
-                f"{lm.compose.translate_model!r} has no enabled deployment"
+                f"{recipe.translate_model!r} has no enabled Messages+image "
+                f"deployment"
             )
-        overlap = execute_qgs & translate_qgs
+        overlap = _quota_groups_for_routes(exec_routes) & _quota_groups_for_routes(
+            trans_routes
+        )
         if overlap:
             raise ConfigValidationError(
                 f"logical model {mg!r}: compose execute and translate share "
                 f"quota_group_id {sorted(overlap)}"
             )
+        e_plans = {pid for pid, _ in exec_routes}
+        f_plans = {
+            plan.id
+            for plan in doc.plans
+            for m in plan.models
+            if m.model == mg
+            and plan.resolved_enabled(m)
+            and plan.resolved_protocol(m) is ApiProtocol.ANTHROPIC_MESSAGES
+        }
+        if f_plans != e_plans:
+            raise ConfigValidationError(
+                f"logical model {mg!r}: facade plan lineage {sorted(f_plans)} "
+                f"must equal execute Messages plans {sorted(e_plans)}"
+            )
+        expected_adv = _execute_advertised_base(doc, recipe.execute_model) | {
+            Feature.IMAGE
+        }
+        if lm.advertised_features != expected_adv:
+            raise ConfigValidationError(
+                f"logical model {mg!r}: advertised_features must equal "
+                f"{sorted(f.value for f in expected_adv)}"
+            )
         for plan in doc.plans:
             for m in plan.models:
                 if m.model != mg or not plan.resolved_enabled(m):
                     continue
+                if (
+                    m.facade_role != "vision"
+                    and mg != _GRANDFATHER_VISION_FACADE
+                ):
+                    raise ConfigValidationError(
+                        f"logical model {mg!r}: composed facade plan rows must "
+                        f"set facade_role: vision"
+                    )
                 if Feature.IMAGE in plan.resolved_features(m):
                     raise ConfigValidationError(
                         f"logical model {mg!r}: composed facade must not declare "

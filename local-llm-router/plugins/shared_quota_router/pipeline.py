@@ -12,25 +12,13 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
 from shared_quota_router.feature_flags import is_gateway_enhance_enabled
+from shared_quota_router.internal_call import is_trusted_internal
 from shared_quota_router.models import ApiProtocol
-from shared_quota_router.protocol_context import get_metadata_value
 
 
-def _truthy(value: Any) -> bool:
-    if value is True or value == 1:
-        return True
-    if isinstance(value, str) and value.strip().lower() in {"1", "true", "yes", "on"}:
-        return True
-    return False
-
-
-def is_internal_call(request_kwargs: Mapping[str, Any] | None) -> bool:
-    """True when this request is a nested vision/memory-extract subcall."""
-    if not isinstance(request_kwargs, dict):
-        return False
-    if _truthy(request_kwargs.get("internal_call")):
-        return True
-    return _truthy(get_metadata_value(request_kwargs, "internal_call"))
+def is_internal_call(request_kwargs: Mapping[str, Any] | None = None) -> bool:
+    """True only for process-trusted nested selects (ContextVar), never client metadata."""
+    return is_trusted_internal()
 
 
 @dataclass(slots=True)
@@ -53,6 +41,8 @@ class EnhanceEnvelope:
     select_deployment: Any = None
     release_lease: Any = None
     http_post: Any = None
+    report_outcome: Any = None
+    renew_lease: Any = None
 
 
 class Stage(Protocol):
@@ -72,7 +62,7 @@ def declared_stages() -> list[Stage]:
 
 
 async def run_pipeline(env: EnhanceEnvelope) -> None:
-    if not is_gateway_enhance_enabled() or env.internal_call:
+    if not is_gateway_enhance_enabled() or env.internal_call or is_trusted_internal():
         return
     for stage in declared_stages():
         if not stage.enabled():
