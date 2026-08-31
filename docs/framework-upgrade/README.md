@@ -41,6 +41,7 @@
 | `docs/分阶段开发方案.md` | 阶段 1–9 执行基线 |
 | `local-llm-router/docs/architecture.md` | 当前已实现架构摘要 |
 | `local-llm-router/docs/adr/ADR-protocol-gateway-integration-boundary.md` | G0-B 边界；流水线挂在该边界内 |
+| `local-llm-router/USAGE.md` | **使用说明**（启动、客户端、切视觉槽位） |
 | `local-llm-router/docs/配置套餐与启动.md` | Windows 套餐 / 启动；含视觉门面客户端配置 |
 | `local-llm-router/docs/operations.md` | 个人本机运维手册 |
 | `local-llm-router/AGENTS.md` | 实现约束 |

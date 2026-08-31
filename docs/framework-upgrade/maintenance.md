@@ -10,6 +10,8 @@
 
 本文告诉操作者和后续 AGENT：**现在代码在哪、怎么改槽位、怎么回滚、不要碰什么。** 不重新开产品取舍。重思考 / fallback / 容器内 PUT 仍禁止。
 
+日常使用说明（开 flag、客户端、CLI 步骤）：[`local-llm-router/USAGE.md`](../../local-llm-router/USAGE.md) §4；Windows 套餐文档 [`local-llm-router/docs/配置套餐与启动.md`](../../local-llm-router/docs/配置套餐与启动.md) §7。
+
 ---
 
 ## 1. 当前状态（2026-08-30）

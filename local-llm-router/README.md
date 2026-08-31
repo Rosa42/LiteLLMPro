@@ -6,11 +6,15 @@
 > 上游 LiteLLM 开源部分亦为 MIT（见 [upstream/litellm/LICENSE](./upstream/litellm/LICENSE) 与 [NOTICE](./NOTICE)）。  
 > `enterprise/` 目录若存在则适用商业许可，勿当作 MIT 分发。
 
-客户端只看到逻辑模型（示例）：
+客户端只看到逻辑模型（示例，以你的 `plans.yaml` 为准）：
 
 ```text
 ark-code-latest
 glm-5.2
+glm-5.3
+glm-5.2-vision    # 组合门面：译图 + 执行；槽位可配置
+MiniMax-M3
+MiniMax-M2.7
 ```
 
 底层将多个套餐账号（OpenCode Go A/B、火山 Coding Plan 等）按 **模型组** 聚合、按 **QuotaGroup（账号共享额度）** 熔断与故障转移。
@@ -26,9 +30,11 @@ cd local-llm-router
 .\scripts\llm-router.ps1 status
 ```
 
-详情：`docs/配置套餐与启动.md` · 日常：`.\scripts\llm-router.ps1 start|stop|status`
+详情：[`USAGE.md`](./USAGE.md) · [`docs/配置套餐与启动.md`](./docs/配置套餐与启动.md) · 日常：`.\scripts\llm-router.ps1 start|stop|status`
 
 客户端：`http://127.0.0.1:4000/v1`，Key 使用 `.env` 中 `LITELLM_MASTER_KEY`（不是上游 Key）。
+
+视觉门面（V1 已落地）：逻辑名默认 `glm-5.2-vision`，走 Anthropic Messages。切执行/译图模型用宿主机 `compose-vision-*`，见 [`USAGE.md`](./USAGE.md) §4。纪律与回滚：[`../docs/framework-upgrade/maintenance.md`](../docs/framework-upgrade/maintenance.md)。
 
 ## 设计原则（摘要）
 
@@ -129,6 +135,10 @@ pytest tests/contract/test_c0_routing.py -q
 
 | 文档 | 路径 |
 |------|------|
+| **使用说明** | [USAGE.md](./USAGE.md) |
+| Windows 套餐 / 启动 / 视觉 CLI | [docs/配置套餐与启动.md](./docs/配置套餐与启动.md) |
+| 本机运维摘要 | [docs/operations.md](./docs/operations.md) |
+| 视觉槽位维护 / flag / 回滚 | [../docs/framework-upgrade/maintenance.md](../docs/framework-upgrade/maintenance.md) |
 | 总设计 | `../升级版的开发设计方案.md` |
 | 分阶段方案 v0.2 | `../docs/分阶段开发方案.md` |
 | Task 1–9 | `../docs/tasks/阶段1-9-任务拆解.md` |
@@ -137,5 +147,6 @@ pytest tests/contract/test_c0_routing.py -q
 ## 状态
 
 **阶段 1–15 主路径已交付**（被动共享额度路由）。  
+**视觉组合门面 V1 已交付**（可配置 execute / 译图槽位；宿主机 CLI）。  
 投入使用请读 **[USAGE.md](./USAGE.md)**。  
-测试：`pytest -q`（49+ passed）。
+测试：`PYTHONPATH=plugins` 后 `pytest tests/unit tests/contract -q`。

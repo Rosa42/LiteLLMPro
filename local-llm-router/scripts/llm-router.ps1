@@ -731,6 +731,7 @@ Files:
   .env                 secrets
   config/plans.yaml    plan declarations
   config/litellm.yaml  generated (apply)
+  USAGE.md             how to run / vision facade
   docs/配置套餐与启动.md
 "@
 }
